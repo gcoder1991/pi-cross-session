@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const pkgDir = fileURLToPath(new URL("..", import.meta.url));
+const pkgDir = process.env.PI_EXT_SOURCE || fileURLToPath(new URL("..", import.meta.url));
 const agentDir = mkdtempSync(join(tmpdir(), "pi-pkg-smoke-"));
 const piBin = process.env.PI_BIN || "pi";
 
