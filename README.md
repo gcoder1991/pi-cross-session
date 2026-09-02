@@ -30,10 +30,10 @@ Each running Pi session automatically registers itself and listens on a private 
 |---|---|---|
 | `/peers`, `/list-pi` | command | List other live Pi sessions (name, busy/idle, cwd, ref) |
 | `list_pi` | tool | Same listing, structured output for the model |
-| `send_message` | tool | Send plain text by exact name, session id, runtime id, or `name [ref]` |
+| `send_pi_message` | tool | Send plain text by exact name, session id, runtime id, or `name [ref]` |
 | `--cross-session-inbound=accept\|refuse` | flag | Control inbound messages (default `accept`; invalid values fall back to `refuse`) |
 
-Just talk to Pi: *"tell the backend session the order API moved to /v2"* — the model calls `send_message` itself. On the receiving side, messages are injected with `deliverAs: "steer"` + `triggerTurn: true`: busy sessions get them between tool calls without interruption, idle sessions start a new turn. Messages render as a single folded line; `Ctrl+O` expands.
+Just talk to Pi: *"tell the backend session the order API moved to /v2"* — the model calls `send_pi_message` itself. On the receiving side, messages are injected with `deliverAs: "steer"` + `triggerTurn: true`: busy sessions get them between tool calls without interruption, idle sessions start a new turn. Messages render as a single folded line; `Ctrl+O` expands.
 
 ```
 › Message from @frontend: API 升版通知 (Ctrl+O to expand)
