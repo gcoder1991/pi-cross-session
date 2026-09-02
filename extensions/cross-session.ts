@@ -733,7 +733,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => ctx.ui.notify(peersText(await livePeers()), "info"),
   });
 
-  pi.registerCommand("list-agents", {
+  pi.registerCommand("list-pi", {
     description: "Alias for /peers",
     handler: async (_args, ctx) => ctx.ui.notify(peersText(await livePeers()), "info"),
   });

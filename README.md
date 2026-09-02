@@ -28,7 +28,7 @@ Each running Pi session automatically registers itself and listens on a private 
 
 | Entry point | Kind | What it does |
 |---|---|---|
-| `/peers`, `/list-agents` | command | List other live Pi sessions (name, busy/idle, cwd, ref) |
+| `/peers`, `/list-pi` | command | List other live Pi sessions (name, busy/idle, cwd, ref) |
 | `list_agents` | tool | Same listing, structured output for the model |
 | `send_message` | tool | Send plain text by exact name, session id, runtime id, or `name [ref]` |
 | `--cross-session-inbound=accept\|refuse` | flag | Control inbound messages (default `accept`; invalid values fall back to `refuse`) |

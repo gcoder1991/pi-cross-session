@@ -37,7 +37,7 @@ function shutdown(passed) {
   const done = () => {
     rmSync(agentDir, { recursive: true, force: true });
     if (passed) {
-      console.log("SMOKE PASS: extension autoloaded, peers + list-agents registered");
+      console.log("SMOKE PASS: extension autoloaded, peers + list-pi registered");
       process.exit(0);
     }
   };
@@ -55,9 +55,9 @@ const waitFor = setInterval(() => {
     if (!line.includes('"command":"get_commands"')) continue;
     clearInterval(waitFor);
     const hasPeers = /"name"\s*:\s*"peers"/.test(out);
-    const hasListAgents = /"name"\s*:\s*"list-agents"/.test(out);
-    if (hasPeers && hasListAgents) return shutdown(true);
-    return fail(`get_commands response missing extension commands (peers=${hasPeers}, list-agents=${hasListAgents})`);
+    const hasListPi = /"name"\s*:\s*"list-pi"/.test(out);
+    if (hasPeers && hasListPi) return shutdown(true);
+    return fail(`get_commands response missing extension commands (peers=${hasPeers}, list-pi=${hasListPi})`);
   }
   if (child.exitCode !== null) return fail(`pi exited early with code ${child.exitCode}`);
 }, 250);
