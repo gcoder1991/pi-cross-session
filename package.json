@@ -1,6 +1,6 @@
 {
   "name": "pi-cross-session",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Pi ↔ Pi same-machine cross-session messaging: discover live sessions and exchange plain-text peer messages over per-instance IPC (Unix socket / named pipe)",
   "keywords": [
     "pi-package",
