@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>Claude Code 跨会话消息机制与 Pi ↔ Pi 本机 IPC 实现报告</title>
+  <style>
+    :root {
+      --ivory:    #FAF9F5;
+      --slate:    #141413;
+      --clay:     #D97757;
+      --oat:      #E3DACC;
+      --olive:    #788C5D;
+      --rust:     #B04A3F;
+      --gray-150: #F0EEE6;
+      --gray-300: #D1CFC5;
+      --gray-500: #87867F;
+      --gray-700: #3D3D3A;
+      --white:    #FFFFFF;
+
+      --serif: ui-serif, Georgia, 'Times New Roman', serif;
+      --sans:  system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      --mono:  ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--sans);
+      background: var(--ivory);
+      color: var(--gray-700);
+      line-height: 1.62;
+      padding: 36px 32px 96px;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    a { color: var(--clay); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--rust); }
+    .page { max-width: 1180px; margin: 0 auto; }
+
+    .toolbar {
+      position: sticky;
+      top: 12px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 26px;
+      padding: 10px 12px 10px 16px;
+      background: var(--white);
+      border: 1.5px solid var(--gray-300);
+      border-radius: 12px;
+    }
+    .toolbar-title { font-family: var(--mono); font-size: 11.5px; color: var(--gray-500); letter-spacing: .03em; }
+    .toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .btn-primary, .btn-secondary {
+      border-radius: 999px;
+      padding: 9px 16px;
+      font-family: var(--mono);
+      font-size: 12px;
+      cursor: pointer;
+      transition: transform .15s ease, background .15s ease;
+    }
+    .btn-primary { background: var(--slate); color: var(--ivory); border: 1.5px solid var(--slate); }
+    .btn-primary:hover { background: var(--gray-700); transform: translateY(-1px); }
+    .btn-primary.copied { background: var(--olive); border-color: var(--olive); }
+    .btn-secondary { background: var(--white); color: var(--gray-700); border: 1.5px solid var(--gray-300); }
+    .btn-secondary:hover { background: var(--gray-150); transform: translateY(-1px); }
+
+    .page-head { margin-bottom: 30px; }
+    .eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--gray-500); margin-bottom: 12px; }
+    h1 { font-family: var(--serif); font-weight: 500; font-size: clamp(36px, 5.2vw, 62px); line-height: 1.08; color: var(--slate); margin-bottom: 18px; letter-spacing: -.02em; max-width: 1040px; }
+    .dek { max-width: 840px; font-size: 17px; color: var(--gray-500); margin-bottom: 20px; }
+    .prompt-box { background: var(--gray-150); border: 1.5px solid var(--gray-300); border-radius: 12px; padding: 16px 20px; font-size: 14.5px; color: var(--gray-700); }
+    .prompt-box .label { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--gray-500); display: block; margin-bottom: 6px; }
+
+    .summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin: 24px 0 30px; }
+    .summary .cell { background: var(--white); border: 1.5px solid var(--gray-300); border-radius: 12px; padding: 18px 18px; min-width: 0; }
+    .summary .k { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--gray-500); margin-bottom: 6px; }
+    .summary .v { font-size: 16px; line-height: 1.28; color: var(--slate); font-weight: 650; overflow-wrap: anywhere; }
+    .summary .v.accent { color: var(--clay); }
+    .summary .v.good { color: var(--olive); }
+
+    .nav-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 44px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; background: var(--gray-150); border: 1.5px solid var(--gray-300); color: var(--gray-700); padding: 6px 10px; border-radius: 8px; white-space: nowrap; text-decoration: none; }
+    .chip:hover { background: var(--oat); color: var(--slate); }
+    .chip strong { color: var(--slate); font-weight: 600; }
+
+    section { margin: 0 0 58px; scroll-margin-top: 92px; }
+    .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+    .sec-head .num { font-family: var(--mono); font-size: 12px; background: var(--oat); color: var(--slate); padding: 3px 9px; border-radius: 8px; }
+    .sec-head h2 { font-family: var(--serif); font-weight: 500; font-size: 28px; color: var(--slate); }
+    .sec-intro { font-size: 14.5px; color: var(--gray-500); max-width: 820px; margin-bottom: 26px; }
+    h3 { font-family: var(--serif); font-weight: 500; font-size: 21px; color: var(--slate); margin-bottom: 10px; }
+    p + p { margin-top: 10px; }
+
+    .tldr { background: var(--slate); color: #E8E6DE; border-radius: 12px; padding: 28px; margin-bottom: 26px; }
+    .tldr .label { font-family: var(--mono); font-size: 11px; color: var(--clay); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 12px; }
+    .tldr h2 { font-family: var(--serif); color: var(--white); font-size: 28px; font-weight: 500; margin-bottom: 14px; }
+    .tldr ul { padding-left: 20px; display: grid; gap: 8px; }
+    .tldr strong { color: var(--white); }
+
+    .reco { border-left: 4px solid var(--clay); background: var(--white); border-radius: 0 12px 12px 0; padding: 24px 28px; }
+    .reco.safe { border-left-color: var(--olive); }
+    .reco h2 { font-family: var(--serif); font-size: 23px; font-weight: 500; color: var(--slate); margin-bottom: 8px; }
+
+    .grid-2, .grid-3, .grid-4 { display: grid; gap: 20px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-2 > *, .grid-3 > *, .grid-4 > * { min-width: 0; }
+    .card { background: var(--white); border: 1.5px solid var(--gray-300); border-radius: 12px; padding: 22px; min-width: 0; }
+    .card:hover { transform: translateY(-2px); }
+    .card .mini { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--gray-500); margin-bottom: 8px; }
+    .card ul { padding-left: 18px; display: grid; gap: 6px; }
+    .card p { font-size: 14px; }
+
+    .tag { display: inline-block; font-family: var(--mono); font-size: 11.5px; background: var(--gray-150); border: 1px solid var(--gray-300); border-radius: 6px; padding: 3px 8px; color: var(--gray-700); }
+    .risk-tag { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 3px 8px; border-radius: 6px; font-weight: 650; }
+    .risk-tag.safe { background: rgba(120,140,93,.15); color: var(--olive); }
+    .risk-tag.medium { background: var(--oat); color: var(--slate); }
+    .risk-tag.attention { background: rgba(217,119,87,.15); color: var(--clay); }
+    .sev { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 650; }
+    .sev.high { background: #F3D9CC; color: #8A3B1E; }
+    .sev.med { background: var(--oat); color: var(--slate); }
+    .sev.low { background: #E4E9DC; color: #4B5C39; }
+
+    .callout { border: 1.5px solid var(--gray-300); border-radius: 12px; padding: 18px 20px; background: var(--gray-150); }
+    .callout strong { color: var(--slate); }
+    .callout.attention { border-left: 4px solid var(--clay); }
+    .callout.safe { border-left: 4px solid var(--olive); }
+
+    .table-wrap { overflow-x: auto; border: 1.5px solid var(--gray-300); border-radius: 12px; background: var(--white); }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { text-align: left; vertical-align: top; padding: 13px 15px; border-bottom: 1.5px solid var(--gray-300); font-size: 13.5px; }
+    th { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--gray-500); background: var(--gray-150); }
+    tr:last-child td { border-bottom: none; }
+    td code, p code, li code { font-family: var(--mono); font-size: .92em; background: var(--gray-150); border: 1px solid var(--gray-300); border-radius: 6px; padding: 1px 5px; color: var(--slate); overflow-wrap: anywhere; }
+
+    .timeline { position: relative; padding: 4px 0 4px 16px; }
+    .timeline::before { content: ""; position: absolute; left: 16px; top: 8px; bottom: 8px; width: 2px; background: var(--gray-300); }
+    .tl-entry { position: relative; padding: 0 0 22px 30px; }
+    .tl-dot { position: absolute; left: -5px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--gray-500); border: 2px solid var(--ivory); box-sizing: content-box; }
+    .tl-dot.impact { background: var(--clay); }
+    .tl-dot.mitigated { background: var(--olive); }
+    .tl-time { display: inline-block; font-family: var(--mono); font-size: 12px; color: var(--gray-700); background: var(--gray-150); border: 1px solid var(--gray-300); border-radius: 6px; padding: 2px 8px; margin-bottom: 6px; }
+    .tl-body strong { color: var(--slate); }
+    .tl-body { font-size: 14px; max-width: 920px; }
+
+    .code { background: var(--slate); border-radius: 12px; padding: 18px 20px; overflow-x: auto; }
+    .code pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.66; color: #E8E6DE; white-space: pre; }
+    .code .kw { color: var(--clay); }
+    .code .str { color: var(--olive); }
+    .code .cm { color: var(--gray-500); }
+    .code .fn { color: #C9B98A; }
+    .code-caption { font-family: var(--mono); font-size: 10.5px; color: var(--gray-500); margin: 8px 0 0 4px; }
+
+    .diff { background: var(--slate); font-family: var(--mono); font-size: 12.5px; line-height: 1.7; overflow-x: auto; border-radius: 12px; }
+    .diff-row { display: grid; grid-template-columns: 48px 18px 1fr; padding: 0 14px 0 0; white-space: pre; }
+    .diff-row .ln { text-align: right; padding-right: 14px; color: var(--gray-500); user-select: none; }
+    .diff-row .mark { text-align: center; color: var(--gray-500); }
+    .diff-row .code-line { color: #E8E6DC; }
+    .diff-row.ctx .code-line { color: #B8B6AC; }
+    .diff-row.add { background: rgba(120,140,93,.15); }
+    .diff-row.add .mark { color: var(--olive); }
+    .diff-row.del { background: rgba(176,74,63,.15); }
+    .diff-row.del .mark { color: var(--rust); }
+    .diff-row.hunk { background: rgba(255,255,255,.04); color: var(--gray-500); }
+
+    details.file-collapsed { border: 1.5px solid var(--gray-300); border-radius: 12px; background: var(--white); margin-bottom: 12px; }
+    details.file-collapsed summary { list-style: none; cursor: pointer; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    details.file-collapsed summary::-webkit-details-marker { display: none; }
+    details.file-collapsed summary::after { content: "+"; font-family: var(--mono); color: var(--gray-500); font-size: 16px; }
+    details.file-collapsed[open] summary::after { content: "−"; }
+    details.file-collapsed .body { padding: 0 18px 18px; font-size: 14px; }
+    .file-path { font-family: var(--mono); font-size: 12px; color: var(--slate); overflow-wrap: anywhere; }
+
+    .diagram-shell { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, .7fr); gap: 20px; align-items: start; }
+    .diagram { background: var(--white); border: 1.5px solid var(--gray-300); border-radius: 12px; padding: 22px; overflow-x: auto; }
+    .diagram svg { display: block; min-width: 720px; width: 100%; }
+    .diagram text { font-family: var(--mono); fill: var(--slate); }
+    .diagram .small { fill: var(--gray-500); font-size: 11px; }
+    .diagram .node { cursor: pointer; outline: none; }
+    .diagram .node rect { fill: var(--white); stroke: var(--gray-300); stroke-width: 1.5; transition: fill .15s ease, stroke .15s ease; }
+    .diagram .node:hover rect, .diagram .node:focus rect, .diagram .node.active rect { fill: var(--gray-150); stroke: var(--clay); }
+    .diagram .wire { stroke: var(--gray-500); stroke-width: 1.5; fill: none; }
+    .caption { font-size: 13px; color: var(--gray-500); margin-top: 12px; }
+    .detail-panel { position: sticky; top: 88px; background: var(--slate); color: #E8E6DE; border-radius: 12px; padding: 22px; min-height: 236px; }
+    .detail-panel .mini { font-family: var(--mono); color: var(--clay); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+    .detail-panel h3 { color: var(--white); }
+    .detail-panel p { font-size: 14px; }
+    .detail-panel code { font-family: var(--mono); color: #C9B98A; }
+
+    .protocol { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
+    .protocol-step { position: relative; background: var(--white); border: 1.5px solid var(--gray-300); border-radius: 12px; padding: 18px; }
+    .protocol-step::after { content: "→"; position: absolute; right: -18px; top: 50%; transform: translateY(-50%); font-family: var(--mono); color: var(--gray-500); z-index: 2; }
+    .protocol-step:last-child::after { display: none; }
+    .protocol-step .n { font-family: var(--mono); font-size: 11px; color: var(--clay); margin-bottom: 8px; }
+    .protocol-step strong { color: var(--slate); display: block; margin-bottom: 5px; }
+    .protocol-step p { font-size: 13px; color: var(--gray-500); }
+
+    .hash { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; color: var(--gray-700); }
+    .evidence-list { display: grid; gap: 10px; }
+    .evidence-row { display: grid; grid-template-columns: 145px 1fr; gap: 14px; align-items: start; padding: 12px 0; border-bottom: 1.5px solid var(--gray-300); }
+    .evidence-row:last-child { border-bottom: none; }
+    .evidence-row .label { font-family: var(--mono); font-size: 11px; color: var(--gray-500); }
+
+    footer { border-top: 1.5px solid var(--gray-300); padding-top: 24px; color: var(--gray-500); font-size: 12.5px; }
+    footer .footer-grid { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+
+    @media (max-width: 1100px) {
+      .summary { grid-template-columns: repeat(3, 1fr); }
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+      .diagram-shell { grid-template-columns: 1fr; }
+      .detail-panel { position: static; }
+    }
+    @media (max-width: 880px) {
+      body { padding: 24px 18px 72px; }
+      .toolbar { position: static; align-items: flex-start; flex-direction: column; }
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .protocol { grid-template-columns: 1fr 1fr; }
+      .protocol-step:nth-child(2)::after { display: none; }
+      h1 { font-size: 40px; }
+    }
+    @media (max-width: 560px) {
+      body { padding: 16px 12px 56px; }
+      .summary, .grid-4, .protocol { grid-template-columns: 1fr; }
+      .protocol-step::after { display: none; }
+      .toolbar-actions { width: 100%; display: grid; grid-template-columns: 1fr; }
+      .btn-primary, .btn-secondary { width: 100%; }
+      .sec-head h2 { font-size: 24px; }
+      .evidence-row { grid-template-columns: 1fr; gap: 4px; }
+      .tldr, .card, .diagram, .reco { padding: 19px; }
+    }
+    @media print {
+      body { padding: 0; background: var(--white); }
+      .toolbar, .nav-chips { display: none; }
+      .page { max-width: none; }
+      section { break-inside: avoid-page; }
+      details.file-collapsed .body { display: block; }
+      .detail-panel { position: static; }
+      a { color: var(--slate); text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="toolbar" aria-label="报告工具栏">
+      <div class="toolbar-title">PI ↔ PI CROSS-SESSION · RESEARCH ARTIFACT</div>
+      <div class="toolbar-actions">
+        <button id="copyBtn" class="btn-primary" type="button">复制为 Markdown</button>
+        <button id="downloadBtn" class="btn-secondary" type="button">下载当前 HTML</button>
+        <button id="printBtn" class="btn-secondary" type="button">打印 / PDF</button>
+      </div>
+    </div>
+
+    <header class="page-head">
+      <div class="eyebrow">逆向研究 · IPC 安全设计 · Pi 0.84.4</div>
+      <h1>Claude Code 跨会话消息机制与 Pi ↔ Pi 本机 IPC 实现报告</h1>
+      <p class="dek">从 Claude Code v2.1.224 的官方行为出发，交叉验证公开发行包中的协议、限流与端点安全实现；审计原 Pi 文件 inbox，并交付一个已安装、已独立验证的同机 socket / named pipe 版本。</p>
+      <div class="prompt-box">
+        <span class="label">研究边界与截止时间</span>
+        目标仅为独立 Pi Session 之间的纯文本 Agent 消息。重点验证 macOS / POSIX 同机路径；不把跨会话消息当作用户授权，不实现跨机器中继。研究截止：2026-09-01 17:00 UTC（本地 2026-09-02 CST）。
+      </div>
+    </header>
+
+    <div class="summary" aria-label="摘要指标">
+      <div class="cell"><div class="k">Claude 起点</div><div class="v accent">v2.1.224</div></div>
+      <div class="cell"><div class="k">逆向样本</div><div class="v">至 v2.1.252</div></div>
+      <div class="cell"><div class="k">同机传输</div><div class="v">每 Session socket / pipe</div></div>
+      <div class="cell"><div class="k">Pi 已安装</div><div class="v good">v2 IPC</div></div>
+      <div class="cell"><div class="k">最终验证</div><div class="v good">PASS</div></div>
+      <div class="cell"><div class="k">未实现</div><div class="v">hold / 跨机器</div></div>
+    </div>
+
+    <nav class="nav-chips" aria-label="报告章节">
+      <a class="chip" href="#conclusion"><strong>01</strong> 结论</a>
+      <a class="chip" href="#method"><strong>02</strong> 方法</a>
+      <a class="chip" href="#official"><strong>03</strong> 官方行为</a>
+      <a class="chip" href="#timeline"><strong>04</strong> 时间线</a>
+      <a class="chip" href="#reverse"><strong>05</strong> 逆向</a>
+      <a class="chip" href="#audit"><strong>06</strong> 旧版审计</a>
+      <a class="chip" href="#architecture"><strong>07</strong> Pi v2</a>
+      <a class="chip" href="#security"><strong>08</strong> 安全模型</a>
+      <a class="chip" href="#matrix"><strong>09</strong> 差距矩阵</a>
+      <a class="chip" href="#validation"><strong>10</strong> 测试证据</a>
+      <a class="chip" href="#limits"><strong>11</strong> 限制与演进</a>
+      <a class="chip" href="#sources"><strong>12</strong> 来源</a>
+    </nav>
+
+    <main>
+      <section id="conclusion">
+        <div class="sec-head"><span class="num">01</span><h2>结论与交付状态</h2></div>
+        <p class="sec-intro">先给最终判断：Claude 的磁盘文件承担发现与密钥发布，不承担同机消息正文队列；真正的数据面是每 Session 独立 IPC 端点。</p>
+
+        <div class="tldr">
+          <div class="label">TL;DR</div>
+          <h2>Pi 应复制的是“注册表 + 每实例 IPC”，而不是文件 inbox。</h2>
+          <ul>
+            <li><strong>Claude 官方模型：</strong><code>ListAgents</code> 发现、<code>SendMessage</code> 发送；本机经 Unix domain socket / Windows named pipe，不经过 Anthropic 服务器。</li>
+            <li><strong>消息权限：</strong>Claude 内部可用 user-role turn mechanics 承载 peer wrapper，但它不是用户意图或授权；不能批准权限、执行 slash command 或修改配置。</li>
+            <li><strong>Pi v1 结论：</strong>文件 inbox 虽有原子落盘优点，但 Session ID 路径拼接可导致路径逃逸与递归删除，watcher 还可能产生未处理 Promise rejection。</li>
+            <li><strong>Pi v2 交付：</strong>每运行实例使用随机 runtime ID、私有注册文件、私有 socket / pipe、JSONL 两阶段认证、限流、去重、队列上限与明确的 <code>submitted</code> 回执。</li>
+            <li><strong>诚实边界：</strong><code>submitted</code> 只表示接收扩展完成验证并调用 Pi API；Pi 0.84.4 的扩展 API 没有持久化确认，因此它不是 durable delivery receipt。</li>
+          </ul>
+        </div>
+
+        <div class="grid-3">
+          <article class="card">
+            <div class="mini">已交付</div>
+            <h3>生产扩展已替换</h3>
+            <p><code>~/.pi/agent/extensions/cross-session.ts</code> 已原子安装，权限 <code>0600</code>，SHA-256 为 <span class="hash">1424b3cd0711268b77aabb10bc478ed59e5f7532fbb6b403f6c18f39d0ea0258</span>。</p>
+          </article>
+          <article class="card">
+            <div class="mini">已验证</div>
+            <h3>真实 Pi RPC 收件</h3>
+            <p>独立子进程加载已安装扩展，通过真实 socket 完成 <code>ready → submitted</code>，随后 RPC <code>get_messages</code> 读到完整 <code>cross-session</code> 消息。</p>
+          </article>
+          <article class="card">
+            <div class="mini">仍需操作</div>
+            <h3>既有 Session 执行 /reload</h3>
+            <p>新进程已验证自动加载。报告生成时仍有安装前启动的 Pi 进程；未向其终端注入按键。它们应各自运行 <code>/reload</code> 后再互相发现。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="method">
+        <div class="sec-head"><span class="num">02</span><h2>研究方法与证据分层</h2></div>
+        <p class="sec-intro">本报告将“官方承诺”“公开包静态分析”“本机运行验证”“设计选择”分开，避免把逆向常量误写成稳定 API。</p>
+        <div class="grid-4">
+          <article class="card">
+            <span class="risk-tag safe">官方</span>
+            <h3>文档与 changelog</h3>
+            <p>确认可用版本、传输路径、入站控制、权限边界、跨机器 Remote Control 路由与公开限制。</p>
+          </article>
+          <article class="card">
+            <span class="risk-tag medium">逆向</span>
+            <h3>公开发行包</h3>
+            <p>分析 npm 包与 macOS ARM64 原生二进制拆出的 send/server/protocol chunks，定位常量与端点检查。</p>
+          </article>
+          <article class="card">
+            <span class="risk-tag safe">验证</span>
+            <h3>真实 Pi 与故障注入</h3>
+            <p>使用 Pi 0.84.4 RPC、隔离注册目录、真实 Unix socket、伪造注册、畸形帧、队列与限流场景。</p>
+          </article>
+          <article class="card">
+            <span class="risk-tag attention">设计</span>
+            <h3>明确的取舍</h3>
+            <p>同 UID 进程作为可信域；不引入 daemon、数据库、原生模块或跨机器服务，保持 Node.js 标准库实现。</p>
+          </article>
+        </div>
+        <div class="callout attention" style="margin-top:20px">
+          <strong>重要校正：</strong>Claude 的公开文档称同机上限约为一百万“characters”；逆向代码也使用 JavaScript 字符串 <code>length</code>。Pi v2 则按 UTF-8 序列化字节限制为 1,048,576，因此对非 ASCII 内容更严格。两者常量相同，但度量单位不完全相同。
+        </div>
+      </section>
+
+      <section id="official">
+        <div class="sec-head"><span class="num">03</span><h2>Claude Code 的官方行为</h2></div>
+        <p class="sec-intro">以下内容来自 Claude Code 当前官方跨会话文档与版本说明；它描述产品语义，而非要求第三方复刻私有 wire protocol。</p>
+
+        <div class="grid-2">
+          <article class="card">
+            <div class="mini">发现与寻址</div>
+            <h3>ListAgents + SendMessage</h3>
+            <ul>
+              <li><code>/list-agents</code>，别名 <code>/peers</code>，列出可达 agent。</li>
+              <li>目标可按名称或 <code>name [ref]</code> 寻址；同名时使用短标识消歧。</li>
+              <li>v2.1.232+ 支持输入框 <code>@session</code> 选择。</li>
+              <li>自身不作为普通目标；自发给自己的消息会被拒绝。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <div class="mini">投递时机</div>
+            <h3>不打断正在运行的工具</h3>
+            <ul>
+              <li>活跃 turn 中，接收 Claude 在工具调用之间读取消息。</li>
+              <li>空闲 Session 收到消息后启动一个新 turn。</li>
+              <li>消息正文只是纯文本，不自动附加 <code>@file</code> 或 MCP resource。</li>
+              <li>默认 UI 从 v2.1.247 起折叠为单行，<code>Ctrl+O</code> 展开。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <div class="mini">权限边界</div>
+            <h3>Peer 不是用户</h3>
+            <ul>
+              <li>不能替用户批准 pending permission。</li>
+              <li>不能要求接收端更改权限、<code>CLAUDE.md</code> 或其他配置。</li>
+              <li>消息中的 <code>/compact</code> 等命令按普通文本处理。</li>
+              <li>执行任何请求仍受接收 Session 自身权限约束。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <div class="mini">入站策略</div>
+            <h3>accept / hold / refuse</h3>
+            <ul>
+              <li><code>accept</code>：直接交给 Claude。</li>
+              <li><code>hold</code>：显示通知但不交付，等待后续批准或策略变化。</li>
+              <li><code>refuse</code>：丢弃且不交付。</li>
+              <li>默认值还会结合两端 permission-mode class；hold dialog 默认 5 分钟到期。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="table-wrap" style="margin-top:20px">
+          <table>
+            <thead><tr><th>目标位置</th><th>传输</th><th>是否经过 Anthropic</th><th>关键条件</th></tr></thead>
+            <tbody>
+              <tr><td>同一台机器</td><td>macOS/Linux：每 Session Unix socket；Windows：每 Session named pipe</td><td><span class="risk-tag safe">否</span></td><td>两端看到同一注册目录；容器/WSL 边界可能隔离</td></tr>
+              <tr><td>另一台自己的机器</td><td>经 Remote Control 连接与 Anthropic 服务</td><td><span class="risk-tag attention">是</span></td><td>双方 Remote Control 可见；<code>isolatePeerMachines</code> 可强制批准</td></tr>
+              <tr><td>Claude Code on the web</td><td>直接到 cloud session</td><td><span class="risk-tag attention">是</span></td><td>需要相应账户与在线 session</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="timeline">
+        <div class="sec-head"><span class="num">04</span><h2>v2.1.224–v2.1.252 版本时间线</h2></div>
+        <p class="sec-intro">发布时间来自 npm registry metadata；功能描述来自官方 changelog 与跨会话文档中的版本门槛。</p>
+        <div class="timeline">
+          <div class="tl-entry"><span class="tl-dot impact"></span><span class="tl-time">2026-08-07 · 2.1.224</span><div class="tl-body"><strong>首发。</strong> macOS/Linux 上加入跨 Session <code>SendMessage</code> 与 <code>ListAgents</code>；引入 <code>crossSessionInbound</code>、<code>dialogExpiry</code>，并修复“写失败仍报告成功”的 teammate inbox 问题。</div></div>
+          <div class="tl-entry"><span class="tl-dot"></span><span class="tl-time">2026-08-07 · 2.1.225</span><div class="tl-body"><strong>跨机器主动发起与到期语义。</strong> 文档将“开始另一台机器上的会话”门槛标为 2.1.225；headless held message 获得 expiry/结束回报。</div></div>
+          <div class="tl-entry"><span class="tl-dot"></span><span class="tl-time">2026-08-13 · 2.1.232</span><div class="tl-body"><strong>@ mention 与配置入口。</strong> 可在输入框直接选择其他 Session；<code>/config</code> 增加 “Messages from your other sessions”。</div></div>
+          <div class="tl-entry"><span class="tl-dot"></span><span class="tl-time">2026-08-17 · 2.1.234</span><div class="tl-body"><strong>Native Windows。</strong> 官方 availability 将原生 Windows 最低版本标为 2.1.234，传输使用 named pipe。</div></div>
+          <div class="tl-entry"><span class="tl-dot"></span><span class="tl-time">2026-08-19 · 2.1.236</span><div class="tl-body"><strong>Idle notice 与 burst 可见性。</strong> 加入一次性 <code>notify_when_idle</code>；发送端不再把接收端因 burst 丢弃的消息误报为已发送。</div></div>
+          <div class="tl-entry"><span class="tl-dot"></span><span class="tl-time">2026-08-21 · 2.1.239</span><div class="tl-body"><strong>列表示义收敛。</strong> teammates 进入 listing，自身名称/自目标提示更明确，并继续完善同名消歧。</div></div>
+          <div class="tl-entry"><span class="tl-dot"></span><span class="tl-time">2026-08-26 · 2.1.247</span><div class="tl-body"><strong>折叠式 UI。</strong> peer message 默认显示单行 <code>Message from @sender: first line</code>，<code>Ctrl+O</code> 展开全文。</div></div>
+          <div class="tl-entry"><span class="tl-dot mitigated"></span><span class="tl-time">2026-08-27 · 2.1.248</span><div class="tl-body"><strong>覆盖面与硬化。</strong> 同机消息扩展到 Bedrock、Vertex、Foundry 与 telemetry disabled；socket 目录失败时回退私有 per-UID <code>/tmp</code>，强化 user namespace 处理。</div></div>
+          <div class="tl-entry"><span class="tl-dot mitigated"></span><span class="tl-time">2026-08-28 · 2.1.251</span><div class="tl-body"><strong>@ 只保留文本。</strong> 修复空闲时启动新 turn 的消息会在接收端附加文件/MCP resource 的行为。</div></div>
+          <div class="tl-entry"><span class="tl-dot mitigated"></span><span class="tl-time">2026-08-31 · 2.1.252</span><div class="tl-body"><strong>Remote Control 回路修复。</strong> 修复按 session id 回复 Claude Desktop 送达消息时的路由；本报告以该版本作为最新逆向样本。</div></div>
+        </div>
+      </section>
+
+      <section id="reverse">
+        <div class="sec-head"><span class="num">05</span><h2>公开发行包逆向：真实数据面</h2></div>
+        <p class="sec-intro">静态分析说明磁盘注册表仅用于发现、端点与 key 发布。消息正文通过 JSON line 写入本地 IPC，接收端再进入 peer guard、入站控制与内部 prompt queue。</p>
+
+        <div class="diagram">
+          <svg viewBox="0 0 980 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Claude Code 本机跨会话架构图">
+            <defs>
+              <marker id="arrowClaude" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#87867F"/></marker>
+            </defs>
+            <rect x="24" y="42" width="190" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="119" y="72" text-anchor="middle" font-size="14" font-weight="600">Session registry</text>
+            <text x="119" y="94" text-anchor="middle" class="small">PID.json · socket · key</text>
+            <rect x="286" y="42" width="176" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="374" y="72" text-anchor="middle" font-size="14" font-weight="600">SendMessage</text>
+            <text x="374" y="94" text-anchor="middle" class="small">preflight + pacing</text>
+            <rect x="540" y="42" width="176" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="628" y="72" text-anchor="middle" font-size="14" font-weight="600">Per-session IPC</text>
+            <text x="628" y="94" text-anchor="middle" class="small">UDS / named pipe</text>
+            <rect x="790" y="42" width="166" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="873" y="72" text-anchor="middle" font-size="14" font-weight="600">Inbox server</text>
+            <text x="873" y="94" text-anchor="middle" class="small">auth + peer identity</text>
+            <path d="M214 79 L286 79" class="wire" marker-end="url(#arrowClaude)"/>
+            <path d="M462 79 L540 79" class="wire" marker-end="url(#arrowClaude)"/>
+            <path d="M716 79 L790 79" class="wire" marker-end="url(#arrowClaude)"/>
+
+            <rect x="176" y="212" width="176" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="264" y="242" text-anchor="middle" font-size="14" font-weight="600">Peer guard</text>
+            <text x="264" y="264" text-anchor="middle" class="small">rate · dedup · hop · queue</text>
+            <rect x="426" y="212" width="176" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="514" y="242" text-anchor="middle" font-size="14" font-weight="600">Inbound policy</text>
+            <text x="514" y="264" text-anchor="middle" class="small">accept · hold · refuse</text>
+            <rect x="676" y="212" width="176" height="74" rx="10" fill="#FFFFFF" stroke="#D1CFC5" stroke-width="1.5"/>
+            <text x="764" y="242" text-anchor="middle" font-size="14" font-weight="600">Prompt queue</text>
+            <text x="764" y="264" text-anchor="middle" class="small">peer origin · no slash</text>
+            <path d="M873 116 C873 168 264 158 264 212" class="wire" marker-end="url(#arrowClaude)"/>
+            <path d="M352 249 L426 249" class="wire" marker-end="url(#arrowClaude)"/>
+            <path d="M602 249 L676 249" class="wire" marker-end="url(#arrowClaude)"/>
+          </svg>
+          <p class="caption">[逆向 + 官方] Claude 同机路径：注册文件用于发现，socket/pipe 承载正文；入站后仍经过 guard 和权限语义。</p>
+        </div>
+
+        <div class="table-wrap" style="margin-top:20px">
+          <table>
+            <thead><tr><th>机制</th><th>Claude 2.1.252 证据</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td>序列化行上限</td><td><code>1,048,576</code>；send/server 均检查字符串长度</td><td>官方表述为约一百万 characters；超过前/在接收端拒绝</td></tr>
+              <tr><td>发送超时</td><td><code>5,000 ms</code></td><td>连接/写入没有无限等待</td></tr>
+              <tr><td>活性探测</td><td><code>250 ms</code></td><td>快速判断 socket 是否 live；失败不会等同于可信身份</td></tr>
+              <tr><td>首行 deadline</td><td><code>30 s</code></td><td>连接后长期无完整 JSON line 会被关闭</td></tr>
+              <tr><td>接收 token bucket</td><td>容量 <code>30</code>；补充 <code>0.5/s</code></td><td>约 2 秒恢复一条；防止 Session 间消息风暴</td></tr>
+              <tr><td>重复窗口</td><td><code>30 s</code></td><td>同 sender 的相同正文短期内丢弃</td></tr>
+              <tr><td>待处理队列</td><td><code>50</code></td><td>达到上限后 drop，并尽量向 sender 回传状态</td></tr>
+              <tr><td>循环防护</td><td>self hops <code>10</code>；chain <code>28</code></td><td>为 relay/跨机器路径限制转发环</td></tr>
+              <tr><td>端点验证</td><td>symlink、socket owner、peer PID/UID、process start</td><td>抵抗 stale path、PID recycling 与错误 endpoint</td></tr>
+              <tr><td>POSIX auth</td><td>官方自注入路径 token 可选；Windows 必需</td><td>POSIX 可结合内核进程证据，Windows 主要依赖 key</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <details class="file-collapsed" style="margin-top:18px">
+          <summary><span class="file-path">/tmp/claude-send-chunk.js · 关键常量与发送端检查</span><span class="risk-tag medium">逆向证据</span></summary>
+          <div class="body">
+            <div class="code"><pre><span class="kw">const</span> lineCap = <span class="str">1048576</span>;
+<span class="kw">const</span> peerGuard = {
+  bucketCapacity: <span class="str">30</span>,
+  refillPerSecond: <span class="str">0.5</span>,
+  dedupWindowMs: <span class="str">30000</span>,
+  maxSelfHops: <span class="str">10</span>,
+  maxChainLength: <span class="str">28</span>
+};
+<span class="cm">// net.Socket timeout: 5000 ms; liveness probe: 250 ms</span></pre></div>
+            <p class="code-caption">本报告只摘录最小必要片段；完整分析副本保存在本机 /tmp 证据文件。</p>
+          </div>
+        </details>
+        <details class="file-collapsed">
+          <summary><span class="file-path">/tmp/claude-server-chunk.js · 入站与端点安全</span><span class="risk-tag medium">逆向证据</span></summary>
+          <div class="body">
+            <p>可见 <code>skipSlashCommands: true</code>、<code>isMeta: true</code>、peer PID/start token 检查、socket 目录祖先检查、symlink 拒绝、首行 deadline、key 发布与 <code>peer_message_status</code> 回执路径。</p>
+          </div>
+        </details>
+      </section>
+
+      <section id="audit">
+        <div class="sec-head"><span class="num">06</span><h2>原 Pi 文件 inbox 审计</h2></div>
+        <p class="sec-intro">v1 的优点是无需服务、rename 后消息落盘；但其路径和异步错误模型不适合作为可信 IPC 基线。</p>
+
+        <div class="grid-3">
+          <article class="card">
+            <span class="sev high">HIGH</span>
+            <h3>Session ID 路径逃逸</h3>
+            <p><code>join(baseDir, id)</code> 直接使用未验证 Session ID；shutdown 再对该路径递归 <code>rm()</code>。恶意或畸形 ID 可越出 peers 目录并删除用户可写目录。</p>
+          </article>
+          <article class="card">
+            <span class="sev high">HIGH</span>
+            <h3>Watcher Promise 丢失</h3>
+            <p><code>watch(..., () =&gt; void drainInbox())</code> 丢弃 Promise。畸形 JSON、读删竞态或 <code>pi.sendMessage()</code> 异常可能成为未处理 rejection。</p>
+          </article>
+          <article class="card">
+            <span class="sev med">MED</span>
+            <h3>身份与投递语义弱</h3>
+            <p>只依赖 PID alive 和可写文件；没有 endpoint 身份、token、明确接收回执、重复抑制或 burst 限流，并发同 Session ID 会互相覆盖。</p>
+          </article>
+        </div>
+
+        <div class="diff" style="margin-top:20px">
+          <div class="diff-row hunk"><span class="ln"></span><span class="mark"></span><span class="code-line">旧实现的关键危险路径（原文件 197–216）</span></div>
+          <div class="diff-row del"><span class="ln">197</span><span class="mark">−</span><span class="code-line">const id = ctx.sessionManager.getSessionId();</span></div>
+          <div class="diff-row del"><span class="ln">198</span><span class="mark">−</span><span class="code-line">ownDir = join(baseDir, id);</span></div>
+          <div class="diff-row del"><span class="ln">206</span><span class="mark">−</span><span class="code-line">watcher = watch(join(ownDir, "inbox"), () =&gt; void drainInbox());</span></div>
+          <div class="diff-row del"><span class="ln">216</span><span class="mark">−</span><span class="code-line">if (ownDir) await rm(ownDir, { recursive: true, force: true });</span></div>
+          <div class="diff-row add"><span class="ln">v2</span><span class="mark">+</span><span class="code-line">路径只由随机 128-bit instanceId 构造；持久 Session ID 仅作元数据。</span></div>
+        </div>
+
+        <div class="reco" style="margin-top:20px">
+          <h2>为什么不“修补一下文件队列”</h2>
+          <p>只修路径仍会留下轮询/watcher 竞态、身份伪造、PID 复用、无活性端点验证和模糊回执。既然 Pi 与 Claude 的目标都是“仅给 live Session 发消息”，每实例 socket 是更短的根因修复路径。v1 已备份为 <code>cross-session.v1-5ec22301.bak</code>，不会被扩展加载器自动加载。</p>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <div class="sec-head"><span class="num">07</span><h2>Pi v2 架构、协议与安装</h2></div>
+        <p class="sec-intro">实现不是 Claude wire-compatible clone，而是保留其产品语义与安全形状，使用 Pi 扩展 API 能可靠支持的最小协议。</p>
+
+        <div class="diagram-shell">
+          <div class="diagram">
+            <svg viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg" aria-label="Pi v2 交互式架构图">
+              <defs>
+                <marker id="arrowPi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#87867F"/></marker>
+              </defs>
+              <g class="node active" data-key="registry" tabindex="0" role="button" aria-label="注册表节点">
+                <rect x="34" y="34" width="230" height="82" rx="10"/>
+                <text x="149" y="68" text-anchor="middle" font-size="14" font-weight="600">私有注册表</text>
+                <text x="149" y="91" text-anchor="middle" class="small">~/.pi/agent/peers/&lt;instance&gt;.json</text>
+              </g>
+              <g class="node" data-key="sender" tabindex="0" role="button" aria-label="发送端节点">
+                <rect x="334" y="34" width="230" height="82" rx="10"/>
+                <text x="449" y="68" text-anchor="middle" font-size="14" font-weight="600">list_agents / send_message</text>
+                <text x="449" y="91" text-anchor="middle" class="small">解析 name · id · ref</text>
+              </g>
+              <g class="node" data-key="socket" tabindex="0" role="button" aria-label="端点节点">
+                <rect x="634" y="34" width="230" height="82" rx="10"/>
+                <text x="749" y="68" text-anchor="middle" font-size="14" font-weight="600">每实例 IPC 端点</text>
+                <text x="749" y="91" text-anchor="middle" class="small">UDS / named pipe · 0600</text>
+              </g>
+              <path d="M264 75 L334 75" class="wire" marker-end="url(#arrowPi)"/>
+              <path d="M564 75 L634 75" class="wire" marker-end="url(#arrowPi)"/>
+
+              <g class="node" data-key="hello" tabindex="0" role="button" aria-label="握手节点">
+                <rect x="34" y="210" width="230" height="82" rx="10"/>
+                <text x="149" y="244" text-anchor="middle" font-size="14" font-weight="600">hello → ready</text>
+                <text x="149" y="267" text-anchor="middle" class="small">target + sender bearer identity</text>
+              </g>
+              <g class="node" data-key="guard" tabindex="0" role="button" aria-label="防护节点">
+                <rect x="334" y="210" width="230" height="82" rx="10"/>
+                <text x="449" y="244" text-anchor="middle" font-size="14" font-weight="600">入站防护</text>
+                <text x="449" y="267" text-anchor="middle" class="small">refuse · queue · rate · dedup</text>
+              </g>
+              <g class="node" data-key="inject" tabindex="0" role="button" aria-label="Pi 注入节点">
+                <rect x="634" y="210" width="230" height="82" rx="10"/>
+                <text x="749" y="244" text-anchor="middle" font-size="14" font-weight="600">pi.sendMessage()</text>
+                <text x="749" y="267" text-anchor="middle" class="small">customType · steer · triggerTurn</text>
+              </g>
+              <path d="M749 116 C749 166 149 158 149 210" class="wire" marker-end="url(#arrowPi)"/>
+              <path d="M264 251 L334 251" class="wire" marker-end="url(#arrowPi)"/>
+              <path d="M564 251 L634 251" class="wire" marker-end="url(#arrowPi)"/>
+
+              <g class="node" data-key="receipt" tabindex="0" role="button" aria-label="回执节点">
+                <rect x="334" y="386" width="230" height="82" rx="10"/>
+                <text x="449" y="420" text-anchor="middle" font-size="14" font-weight="600">submitted 回执</text>
+                <text x="449" y="443" text-anchor="middle" class="small">明确但非 durable</text>
+              </g>
+              <path d="M749 292 C749 350 449 330 449 386" class="wire" marker-end="url(#arrowPi)"/>
+            </svg>
+            <p class="caption">点击节点查看实现细节。端点 namespace 由 agent directory 的 SHA-256 前 12 位隔离，避免测试或其他配置目录共享 runtime path。</p>
+          </div>
+          <aside class="detail-panel" aria-live="polite">
+            <div class="mini">架构节点</div>
+            <h3 id="detailTitle">私有注册表</h3>
+            <p id="detailBody">每个运行实例写入一个平铺的 0600 JSON 文件。文件名只来自随机 32-hex instanceId；持久 Session ID 不参与路径构造，因此不能路径逃逸，也不会让并发 resume 实例互相覆盖。</p>
+          </aside>
+        </div>
+
+        <div class="protocol" style="margin-top:22px">
+          <div class="protocol-step"><div class="n">01 · DISCOVER</div><strong>读取与验证注册</strong><p>拒绝 symlink、非普通文件、错误 owner/mode、畸形 instance 与意外 socket path。</p></div>
+          <div class="protocol-step"><div class="n">02 · HELLO</div><strong>双向身份声明</strong><p>发送目标 id/instance/token；发送者同时携带自己的注册身份与 token。</p></div>
+          <div class="protocol-step"><div class="n">03 · MESSAGE</div><strong>纯文本 JSONL</strong><p>校验 frame、refuse、50 队列、30/.5 token bucket 与 30 秒重复窗口。</p></div>
+          <div class="protocol-step"><div class="n">04 · RECEIPT</div><strong>submitted</strong><p>接收扩展已同步调用 Pi API；不自动重试，避免 timeout 后制造重复。</p></div>
+        </div>
+
+        <div class="grid-2" style="margin-top:22px">
+          <article>
+            <div class="code"><pre><span class="cm">// 第一阶段：认证目标并声明 sender</span>
+{
+  <span class="str">"v"</span>: <span class="str">1</span>,
+  <span class="str">"type"</span>: <span class="str">"hello"</span>,
+  <span class="str">"target"</span>: { <span class="str">"id"</span>: <span class="str">"…"</span>, <span class="str">"instanceId"</span>: <span class="str">"32-hex"</span> },
+  <span class="str">"token"</span>: <span class="str">"64-hex"</span>,
+  <span class="str">"from"</span>: { <span class="str">"id"</span>: <span class="str">"…"</span>, <span class="str">"instanceId"</span>: <span class="str">"…"</span>, <span class="str">"token"</span>: <span class="str">"…"</span> }
+}</pre></div>
+            <p class="code-caption">token 示例仅示意长度；真实 token 从不出现在 list_agents 输出或消息 details。</p>
+          </article>
+          <article>
+            <div class="code"><pre><span class="cm">// 第二阶段：一条纯文本消息</span>
+{
+  <span class="str">"v"</span>: <span class="str">1</span>,
+  <span class="str">"type"</span>: <span class="str">"message"</span>,
+  <span class="str">"requestId"</span>: <span class="str">"uuid"</span>,
+  <span class="str">"messageId"</span>: <span class="str">"uuid"</span>,
+  <span class="str">"text"</span>: <span class="str">"plain text only"</span>,
+  <span class="str">"summary"</span>: <span class="str">"one-line preview"</span>,
+  <span class="str">"sentAt"</span>: <span class="str">1788…</span>
+}</pre></div>
+            <p class="code-caption">接收端回 <code>submitted</code>，并回显 receiver id / instance / pid 供发送端验证。</p>
+          </article>
+        </div>
+
+        <div class="table-wrap" style="margin-top:22px">
+          <table>
+            <thead><tr><th>已安装项</th><th>值</th><th>验证</th></tr></thead>
+            <tbody>
+              <tr><td>生产扩展</td><td><code>/Users/relvf/.pi/agent/extensions/cross-session.ts</code></td><td><span class="risk-tag safe">0600</span></td></tr>
+              <tr><td>生产 SHA-256</td><td class="hash">1424b3cd0711268b77aabb10bc478ed59e5f7532fbb6b403f6c18f39d0ea0258</td><td>与审查候选逐字节一致</td></tr>
+              <tr><td>v1 备份</td><td><code>cross-session.v1-5ec22301.bak</code></td><td>0600；扩展加载器不加载 .bak</td></tr>
+              <tr><td>生产注册目录</td><td><code>~/.pi/agent/peers</code></td><td>0700；旧 v1 目录已安全删除</td></tr>
+              <tr><td>生产 runtime</td><td><code>/tmp/pi-peers-501-d0239d6a4411</code></td><td>0700；测试后无 socket 泄漏</td></tr>
+              <tr><td>工具 / 命令</td><td><code>list_agents</code>、<code>send_message</code>、<code>/peers</code>、<code>/list-agents</code></td><td>真实 Pi auto-load 已发现</td></tr>
+              <tr><td>入站 flag</td><td><code>--cross-session-inbound=accept|refuse</code></td><td>无效值安全回落为 refuse</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="security">
+        <div class="sec-head"><span class="num">08</span><h2>安全模型与投递语义</h2></div>
+        <p class="sec-intro">安全边界不是“任何本地进程都不可信”，而是“防御其他 OS 用户、陈旧端点、路径替换与意外客户端；同 UID 进程属于可信域”。</p>
+
+        <div class="grid-2">
+          <article class="card">
+            <span class="risk-tag safe">覆盖</span>
+            <h3>已防御</h3>
+            <ul>
+              <li>Session ID 路径逃逸与递归误删。</li>
+              <li>注册文件 / socket symlink 与错误文件类型。</li>
+              <li>其他 UID 读取注册 token 或连接 0600 socket。</li>
+              <li>目标 instance/id/token 不一致与错误 endpoint 回执。</li>
+              <li>畸形 JSON、空正文、过大 frame、burst、重复与 50 条队列溢出。</li>
+              <li>探测超时时误删仍存活 peer 的 socket；现在仅在 PID 已死时清理。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="risk-tag attention">不覆盖</span>
+            <h3>明确接受的限制</h3>
+            <ul>
+              <li><strong>恶意同 UID 进程：</strong>可读取 0600 注册文件中的 bearer token，因此可伪造 sender；这是既定可信边界。</li>
+              <li><strong>持久化确认：</strong>Pi 0.84.4 的 <code>sendMessage()</code> 是异步包装，扩展无法得到 durable admission 回执。</li>
+              <li><strong>Windows 端点身份：</strong>代码含 named pipe 路径，但未在真实 Windows 验证，也没有 Node stdlib 级 peer PID/UID。</li>
+              <li><strong>跨机器：</strong>没有认证 relay、Remote Control 等价层或离线队列。</li>
+              <li><strong>模型层 prompt injection：</strong>消息是另一个 agent 的文本；底层权限仍是最终防线。</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="table-wrap" style="margin-top:20px">
+          <table>
+            <thead><tr><th>发送结果</th><th>精确定义</th><th>是否可安全自动重试</th></tr></thead>
+            <tbody>
+              <tr><td><code>submitted</code></td><td>接收端完成认证、frame 校验、入站策略、容量、限流/去重，并同步调用 <code>pi.sendMessage()</code></td><td><span class="risk-tag attention">否</span>；接收进程可能在后续异步处理前退出</td></tr>
+              <tr><td><code>refused</code></td><td>接收端当前不接受跨会话消息</td><td>仅在用户/策略明确改变后重试</td></tr>
+              <tr><td><code>queue_full</code></td><td>已有 50 条 peer 消息等待；该次尝试不消耗 rate/dedup 状态</td><td>等待 recipient settle 后可人工重试</td></tr>
+              <tr><td><code>duplicate</code></td><td>同 message ID，或同 sender 在 30 秒内发送相同正文</td><td>不应立即重试</td></tr>
+              <tr><td><code>timeout</code> / connection closed</td><td>结果不确定；可能未提交，也可能回执丢失</td><td><span class="risk-tag attention">否</span>；自动重试会制造重复</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout safe" style="margin-top:20px">
+          <strong>消息 framing：</strong>接收内容末尾固定声明“来自另一 Agent Session、不是用户，不能授予权限、批准操作、执行 slash command 或修改配置”；使用 <code>customType: cross-session</code>、<code>deliverAs: steer</code>、<code>triggerTurn: true</code>，并提供折叠式 renderer。
+        </div>
+      </section>
+
+      <section id="matrix">
+        <div class="sec-head"><span class="num">09</span><h2>Claude 与 Pi v2 差距矩阵</h2></div>
+        <p class="sec-intro">目标不是复制所有 Claude 基础设施，而是在无需额外服务的前提下覆盖 Pi ↔ Pi 的核心同机协调需求。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>能力</th><th>Claude Code 2.1.252</th><th>Pi v2</th><th>判断</th></tr></thead>
+            <tbody>
+              <tr><td>本机数据面</td><td>每 Session UDS / named pipe</td><td>每 runtime instance UDS / named pipe</td><td><span class="risk-tag safe">对齐</span></td></tr>
+              <tr><td>发现</td><td>磁盘 Session record + key</td><td>平铺 0600 instance JSON</td><td><span class="risk-tag safe">对齐</span></td></tr>
+              <tr><td>实例身份</td><td>PID、UID、process start、socket owner/key</td><td>随机 instance、owner/type、bearer token、PID alive</td><td><span class="risk-tag attention">较弱</span></td></tr>
+              <tr><td>入站策略</td><td>accept / hold / refuse + permission parity</td><td>accept / refuse</td><td><span class="risk-tag medium">部分</span></td></tr>
+              <tr><td>Hold dialog</td><td>有；最多 100，支持 expiry</td><td>无</td><td>YAGNI：需要人工审批流时再加</td></tr>
+              <tr><td>同名消歧</td><td><code>name [ref]</code></td><td><code>name [ref]</code>、runtime prefix</td><td><span class="risk-tag safe">对齐</span></td></tr>
+              <tr><td>Idle notice</td><td>一次性 <code>notify_when_idle</code>，12h</td><td>无</td><td>可独立扩展，不影响现协议</td></tr>
+              <tr><td>限流 / 去重 / queue</td><td>30 / 0.5s、30s、50</td><td>30 / 0.5s、30s、50</td><td><span class="risk-tag safe">对齐</span></td></tr>
+              <tr><td>循环 hop guard</td><td>有，为 relay chain 服务</td><td>无 relay，因此无 hop chain</td><td><span class="risk-tag safe">无需</span></td></tr>
+              <tr><td>回执</td><td>transport close + 异步 held/dropped status</td><td>同步 <code>submitted</code> 响应</td><td>语义不同，Pi 明确非 durable</td></tr>
+              <tr><td>跨机器</td><td>Remote Control / cloud relay</td><td>无</td><td><span class="risk-tag attention">缺失</span></td></tr>
+              <tr><td>@ typeahead</td><td>2.1.232+</td><td>无；工具先 list 再 send</td><td>UI 增强项</td></tr>
+              <tr><td>折叠消息 UI</td><td>单行预览，Ctrl+O 展开</td><td>自定义 renderer 同样折叠</td><td><span class="risk-tag safe">对齐</span></td></tr>
+              <tr><td>依赖</td><td>产品内建 / 原生能力</td><td>Node.js 标准库 + Pi 已有包</td><td><span class="risk-tag safe">零新增</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="validation">
+        <div class="sec-head"><span class="num">10</span><h2>测试、独立审查与运行证据</h2></div>
+        <p class="sec-intro">最终扩展 hash 在独立 reviewer / QA、安装文件与真实 RPC 运行之间保持一致。测试使用临时 <code>PI_CODING_AGENT_DIR</code> 与 agent-dir hash namespace，不接触生产注册表或 runtime socket。</p>
+
+        <div class="summary" style="grid-template-columns:repeat(4,1fr)">
+          <div class="cell"><div class="k">TypeScript</div><div class="v good">PASS</div></div>
+          <div class="cell"><div class="k">集成场景</div><div class="v good">PASS</div></div>
+          <div class="cell"><div class="k">真实 Pi RPC</div><div class="v good">PASS</div></div>
+          <div class="cell"><div class="k">独立 QA / Review</div><div class="v good">PASS</div></div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>验证内容</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td>正常发现 / 发送</td><td>token 不出现在 public peer；消息以 steer 注入；回执 peer 身份匹配</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>认证 / 畸形 frame</td><td>错误 token、message-first、非法 JSON、非字符串正文、过大消息</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>路径安全</td><td>恶意持久 Session ID 不参与路径；registry symlink 忽略；socket 类型/owner 检查</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>陈旧端点</td><td>dead PID 清理；aged-but-live PID 的注册与 socket sentinel 不被 unlink</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>并发同 Session ID</td><td>两个不同 runtime 使用相同持久 ID；按 ID 发送返回 Ambiguous session</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>Queue transaction</td><td>50 条后 queue_full；settled 后同一被拒正文可重试；拒绝不提交 dedup/rate</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>Rate rollback</td><td>先消耗 29/30 token，再强制同步 injection failure；相同正文仍可使用最后 token 成功</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>Unicode</td><td>150 个 astral emoji 的 name 与 summary 按 code point 保留，不截断 surrogate</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>Shutdown cleanup</td><td>注册与 Unix socket 在 shutdown 前存在，之后均消失</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>真实 Pi RPC</td><td>真实子进程 PID、ready/submitted、get_messages、安全文案、无 token 暴露、stderr 为空</td><td><span class="risk-tag safe">PASS</span></td></tr>
+              <tr><td>生产 auto-load</td><td>不加 <code>-e</code> 启动 Pi，get_commands 发现 <code>peers</code> 与 <code>list-agents</code>；退出无泄漏</td><td><span class="risk-tag safe">PASS</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2" style="margin-top:20px">
+          <article class="card">
+            <div class="mini">最终本机日志</div>
+            <h3>/tmp/cross-session-final-verification.log</h3>
+            <div class="code"><pre>installed source matches reviewed candidate: ok
+typescript: ok
+cross-session v2 integration: ok
+cross-session rpc inbox integration: ok
+"name":"list-agents"
+"name":"peers"
+autoload: ok
+no registration/socket leaks: ok</pre></div>
+          </article>
+          <article class="card">
+            <div class="mini">独立 QA 证据</div>
+            <h3>/Users/relvf/cross-session-v2-validation/</h3>
+            <p>QA 重新读取 authoritative files，运行原始与 adversarial suite，核对真实 child PID、隔离 namespace、同 ID 歧义、aged-live retention、queue retry 与 RPC payload。</p>
+            <div class="evidence-list" style="margin-top:12px">
+              <div class="evidence-row"><div class="label">authoritative log</div><div class="hash">a22a2225a33b51334672baa1b958b937c0896915c0b5cc4bd45127e6eee97f02</div></div>
+              <div class="evidence-row"><div class="label">adversarial v2</div><div class="hash">fe7009039429de2cd5e9d5ea4656acfca9f5fd1ac7cc815816f570069a188010</div></div>
+              <div class="evidence-row"><div class="label">adversarial RPC</div><div class="hash">975d04565ab5a050e15f93ef7220ba6fe63e3f64dbbe94092a5f809d5ab9cf65</div></div>
+            </div>
+          </article>
+        </div>
+
+        <details class="file-collapsed" style="margin-top:18px">
+          <summary><span class="file-path">独立 reviewer 首轮发现 → 修复闭环</span><span class="risk-tag safe">closed</span></summary>
+          <div class="body">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>发现</th><th>修复</th></tr></thead>
+                <tbody>
+                  <tr><td>aged live probe 失败可能 unlink 活跃 socket</td><td>仅当 PID 已死才删除他人注册/socket；增加 live sentinel 测试</td></tr>
+                  <tr><td><code>accepted</code> 暗示 durable delivery</td><td>改名 <code>submitted</code>，工具结果明确声明 Pi API 无 durable ack</td></tr>
+                  <tr><td>queue_full / injection failure 可能消耗 rate/dedup</td><td>capacity 前置；admission 使用 commit/rollback transaction</td></tr>
+                  <tr><td>astral Unicode 构造与校验单位不一致</td><td>统一 code-point metric，并加入 name/summary emoji 测试</td></tr>
+                  <tr><td>测试污染生产 registry/runtime</td><td>临时 agent dir + SHA-256 runtime namespace + 完整 cleanup</td></tr>
+                  <tr><td>同 UID 可伪造 sender</td><td>不伪装为已解决；在代码与报告中明确为接受的可信边界</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section id="limits">
+        <div class="sec-head"><span class="num">11</span><h2>剩余限制与按需演进</h2></div>
+        <p class="sec-intro">Ponytail 原则：当前同机协调已闭环，不为尚未出现的需求引入 daemon、数据库或跨机器控制面。</p>
+        <div class="grid-3">
+          <article class="card">
+            <span class="sev high">P0</span>
+            <h3>现有 Session reload</h3>
+            <p>在每个安装前已启动的 Pi 中执行 <code>/reload</code>。当它们都写出 v2 平铺注册后，<code>/peers</code> 才会互相可见。</p>
+          </article>
+          <article class="card">
+            <span class="sev med">P1</span>
+            <h3>Windows 实机验证</h3>
+            <p>在 native Windows 验证 named pipe、注册目录 ACL、超时、并发 shutdown 与错误 token；未验证前不承诺完整跨平台安全等价。</p>
+          </article>
+          <article class="card">
+            <span class="sev low">WHEN NEEDED</span>
+            <h3>Hold / relay / stronger same-UID</h3>
+            <p>需要人工审批时加 hold queue；需要跨机器时加认证 relay；只有当同 UID 也被视为敌手时，才引入 process-private Ed25519 signing 或 native peer credential。</p>
+          </article>
+        </div>
+        <div class="reco safe" style="margin-top:20px">
+          <h2>当前建议</h2>
+          <p>保持 v2 同机实现不变，先在真实双 Session 工作流中使用。只有出现明确需求或观测到失败模式，再增加 hold、idle notice 或跨机器 relay；这些功能都可在不改变 <code>list_agents</code> / <code>send_message</code> 接口的前提下演进。</p>
+        </div>
+      </section>
+
+      <section id="sources">
+        <div class="sec-head"><span class="num">12</span><h2>来源、哈希与可复核材料</h2></div>
+        <p class="sec-intro">链接是公开来源；本地路径是本次分析与验证留下的有界证据。逆向结果不是 Anthropic 的兼容性承诺。</p>
+
+        <div class="grid-2">
+          <article class="card">
+            <div class="mini">官方来源</div>
+            <h3>Claude Code</h3>
+            <ul>
+              <li><a href="https://code.claude.com/docs/en/cross-session-messaging" target="_blank" rel="noreferrer">Cross-session messaging documentation</a></li>
+              <li><a href="https://code.claude.com/docs/en/changelog" target="_blank" rel="noreferrer">Claude Code changelog</a></li>
+              <li><a href="https://github.com/anthropics/claude-code/releases/tag/v2.1.224" target="_blank" rel="noreferrer">GitHub release v2.1.224</a></li>
+              <li><a href="https://registry.npmjs.org/@anthropic-ai/claude-code" target="_blank" rel="noreferrer">npm registry metadata</a></li>
+            </ul>
+          </article>
+          <article class="card">
+            <div class="mini">Pi API 来源</div>
+            <h3>本机 Pi 0.84.4 文档</h3>
+            <ul>
+              <li><code>/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md</code></li>
+              <li><code>docs/rpc.md</code>、<code>docs/sdk.md</code>、<code>docs/session-format.md</code></li>
+              <li><code>examples/extensions/message-renderer.ts</code></li>
+              <li><code>examples/extensions/send-user-message.ts</code></li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="table-wrap" style="margin-top:20px">
+          <table>
+            <thead><tr><th>证据</th><th>路径 / 标识</th><th>SHA-256 / 说明</th></tr></thead>
+            <tbody>
+              <tr><td>Claude 2.1.252 npm tgz</td><td><code>@anthropic-ai/claude-code@2.1.252</code></td><td class="hash">e5e04447d3afdf70f7578f9d22217c530a0ef8c59ae2f78e32d1a6ea2fb3cafa</td></tr>
+              <tr><td>Claude 2.1.252 macOS ARM64 binary</td><td>公开原生包样本</td><td class="hash">b661c6a094fcc32656bf7c0071c5b45bf900b34d4f0a1ab3d78fd59aeba2c2c7</td></tr>
+              <tr><td>Reverse send chunk</td><td><code>/tmp/claude-send-chunk.js</code></td><td>line cap、pacing、dedup、receipt tracking、endpoint checks</td></tr>
+              <tr><td>Reverse server chunk</td><td><code>/tmp/claude-server-chunk.js</code></td><td>inbox server、peer identity、socket directory hardening、peer status</td></tr>
+              <tr><td>Reverse protocol context</td><td><code>/tmp/claude-protocol-chunk.js</code></td><td>2.1.252 build time / GIT SHA 与周边协议上下文</td></tr>
+              <tr><td>旧 Pi v1</td><td><code>cross-session.v1-5ec22301.bak</code></td><td class="hash">5ec22301fa154b0b80d04bdd406fa257f38e7743141080882a400e1e7c3045b9</td></tr>
+              <tr><td>已安装 Pi v2</td><td><code>~/.pi/agent/extensions/cross-session.ts</code></td><td class="hash">1424b3cd0711268b77aabb10bc478ed59e5f7532fbb6b403f6c18f39d0ea0258</td></tr>
+              <tr><td>最终集成测试</td><td><code>/tmp/cross-session-v2.test.ts</code></td><td class="hash">9d38185cb79679ca481dd97c38ddd47c37fab80bbaefd5f64a559dd3cb19d4d4</td></tr>
+              <tr><td>最终 RPC 测试</td><td><code>/tmp/cross-session-rpc.test.mjs</code></td><td class="hash">a7f23e1dd0703c33d85cbe5f717bff955ba543220f37929124d6a9a183196fe4</td></tr>
+              <tr><td>最终验证日志</td><td><code>/tmp/cross-session-final-verification.log</code></td><td>TypeScript、integration、real RPC、autoload、cleanup 全部通过</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-grid">
+        <span>生成环境：macOS 26.5.2 arm64 · Pi 0.84.4 · Node v24.13.1 · Bun 1.3.14</span>
+        <span>报告文件：/Users/relvf/pi-cross-session-research-report.html</span>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      var details = {
+        registry: {
+          title: '私有注册表',
+          body: '每个运行实例写入一个平铺的 0600 JSON 文件。文件名只来自随机 32-hex instanceId；持久 Session ID 不参与路径构造，因此不能路径逃逸，也不会让并发 resume 实例互相覆盖。'
+        },
+        sender: {
+          title: '发现与寻址',
+          body: 'list_agents 只返回去除 token 的 public metadata。send_message 支持 exact name、持久 Session ID、runtime ID/prefix 与 name [ref]；多匹配必须显式消歧。'
+        },
+        socket: {
+          title: '每实例 IPC 端点',
+          body: 'POSIX 使用私有 0600 Unix socket，Windows 使用 namespaced named pipe。runtime directory 是 0700，并由 agent directory hash 隔离测试或其他配置目录。'
+        },
+        hello: {
+          title: 'hello → ready',
+          body: '第一帧必须携带目标 token，并可携带 sender 注册 token。接收端验证 target id/instance、sender id/instance 及两个 bearer secret；错误身份直接关闭连接。'
+        },
+        guard: {
+          title: '入站防护',
+          body: '顺序为：纯文本 frame → inbound refuse → 50 条 queue capacity → 30/.5 token bucket → 30 秒 message ID/正文去重。只有实际提交时才 commit rate/dedup 状态。'
+        },
+        inject: {
+          title: 'Pi 消息注入',
+          body: '调用 pi.sendMessage({ customType: cross-session, ... }, { deliverAs: steer, triggerTurn: true })。正文末尾声明 peer 不是用户，也不能授予权限或执行命令。'
+        },
+        receipt: {
+          title: 'submitted 回执',
+          body: '发送端验证 requestId、status、receiver id 与 instance。该回执证明接收扩展已完成同步提交，不证明 Pi 已持久化或模型已读取；因此超时后不自动重试。'
+        }
+      };
+
+      var nodes = Array.prototype.slice.call(document.querySelectorAll('.diagram .node[data-key]'));
+      var title = document.getElementById('detailTitle');
+      var body = document.getElementById('detailBody');
+      function selectNode(node) {
+        nodes.forEach(function (item) { item.classList.toggle('active', item === node); });
+        var detail = details[node.getAttribute('data-key')];
+        if (detail) { title.textContent = detail.title; body.textContent = detail.body; }
+      }
+      nodes.forEach(function (node) {
+        node.addEventListener('click', function () { selectNode(node); });
+        node.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node); }
+        });
+      });
+
+      var markdown = [
+        '# Claude Code 跨会话消息机制与 Pi ↔ Pi 本机 IPC 实现报告',
+        '',
+        '## 结论',
+        '- Claude 同机跨会话使用每 Session Unix socket / Windows named pipe；磁盘注册文件只承担发现与 key 发布。',
+        '- 消息是纯文本 peer/agent 消息，不是用户授权，不能批准权限、执行 slash command 或修改配置。',
+        '- 旧 Pi 文件 inbox 存在 Session ID 路径逃逸、递归删除和 watcher Promise rejection 风险。',
+        '- Pi v2 已安装到 `~/.pi/agent/extensions/cross-session.ts`，SHA-256 `1424b3cd0711268b77aabb10bc478ed59e5f7532fbb6b403f6c18f39d0ea0258`。',
+        '- Pi v2 使用随机 runtime instance、私有 registry、每实例 socket/pipe、JSONL hello/message、30/.5 限流、30 秒去重和 50 条队列。',
+        '- 回执名为 `submitted`：它不是 durable delivery acknowledgement。',
+        '',
+        '## 关键差距',
+        '- Pi 暂无 `hold`、approval dialog、idle notice 与跨机器 relay。',
+        '- 同 UID 进程属于可信域；bearer token 不防御恶意同 UID 进程。',
+        '- Windows named pipe 分支尚未在真实 Windows 验证。',
+        '',
+        '## 验证',
+        '- TypeScript: PASS',
+        '- Integration: `cross-session v2 integration: ok`',
+        '- Real Pi RPC: `cross-session rpc inbox integration: ok`',
+        '- Production auto-load: `/peers` 与 `/list-agents` 已发现',
+        '- Cleanup: 无 registration/socket 泄漏',
+        '',
+        '## 来源',
+        '- https://code.claude.com/docs/en/cross-session-messaging',
+        '- https://code.claude.com/docs/en/changelog',
+        '- https://github.com/anthropics/claude-code/releases/tag/v2.1.224',
+        '- https://registry.npmjs.org/@anthropic-ai/claude-code',
+        '',
+        '完整 HTML：`/Users/relvf/pi-cross-session-research-report.html`'
+      ].join('\n');
+
+      function copyText(text, button) {
+        function flash() {
+          var old = button.textContent;
+          button.textContent = '已复制 ✓';
+          button.classList.add('copied');
+          window.setTimeout(function () { button.textContent = old; button.classList.remove('copied'); }, 1300);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(flash, flash);
+        } else {
+          var area = document.createElement('textarea');
+          area.value = text;
+          area.style.position = 'fixed';
+          area.style.left = '-9999px';
+          document.body.appendChild(area);
+          area.select();
+          try { document.execCommand('copy'); } catch (error) {}
+          document.body.removeChild(area);
+          flash();
+        }
+      }
+
+      document.getElementById('copyBtn').addEventListener('click', function () { copyText(markdown, this); });
+      document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+      document.getElementById('downloadBtn').addEventListener('click', function () {
+        var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+        var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = 'pi-cross-session-research-report.html';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      });
+    })();
+  </script>
+</body>
+</html>
