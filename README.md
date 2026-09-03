@@ -33,7 +33,11 @@ Each running Pi session automatically registers itself and listens on a private 
 | `send_pi_message` | tool | Send plain text by exact name, session id, runtime id, or `name [ref]` |
 | `--cross-session-inbound=accept\|refuse` | flag | Control inbound messages (default `accept`; invalid values fall back to `refuse`) |
 
-Just talk to Pi: *"tell the backend session the order API moved to /v2"* — the model calls `send_pi_message` itself. On the receiving side, messages are injected with `deliverAs: "steer"` + `triggerTurn: true`: busy sessions get them between tool calls without interruption, idle sessions start a new turn. Messages render as a single folded line; `Ctrl+O` expands.
+Just talk to Pi: *"tell the backend session the order API moved to /v2"* — the model calls `send_pi_message` itself. If the target is not explicit, the model uses `list_pi` and chooses from the known responsibility, exact session name, and working directory; busy/idle is delivery state, not a routing preference. In the TUI, type `@` to select a live session as `@name [ref]` and make the target explicit.
+
+Pi may also send a concrete finding, decision, question, or status when another independent session needs it mid-task. It should not send routine progress, guess an uncertain recipient, or delegate work it can handle itself.
+
+On the receiving side, messages are injected with `deliverAs: "steer"` + `triggerTurn: true`: busy sessions get them between tool calls without interruption, idle sessions start a new turn. Messages render as a single folded line; `Ctrl+O` expands.
 
 ```
 › Message from @frontend: API 升版通知 (Ctrl+O to expand)
