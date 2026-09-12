@@ -28,8 +28,8 @@ Each independent Host session registers itself and listens on a private IPC endp
 
 | Entry point | Kind | What it does |
 |---|---|---|
-| `/peers`, `/list-pi` | command | List other live Pi sessions (name, busy/idle, cwd, ref) |
-| `list_pi` | tool | Same listing, structured output for the model |
+| `/peers`, `/list-pi` | command | List other live Pi sessions (name, busy/idle, cwd, Git worktree/branch/HEAD, ref) |
+| `list_pi` | tool | Same listing, structured output for the model (`git: null` outside Git) |
 | `send_pi_message` | tool | Send plain text by exact name, session id, runtime id, or `name [ref]` |
 | `--cross-session-inbound=accept\|refuse` | flag | Control inbound messages (default `accept`; invalid values fall back to `refuse`) |
 | `/cross-session-status` | command | Bounded local queue/submission/drop diagnostics and remaining budget |
@@ -50,7 +50,7 @@ An observed abort (including unknown/internal abort) latches reception closed an
 
 ## How it works
 
-- **Discovery plane**: each runtime instance writes a `0600` JSON file under `~/.pi/agent/peers/<instanceId>.json` (name, status, cwd, pid, socket path, bearer token). Refreshed every 30s; removed on shutdown.
+- **Discovery plane**: each runtime instance writes a `0600` JSON file under `~/.pi/agent/peers/<instanceId>.json` (name, status, cwd, pid, socket path, bearer token). Refreshed every 30s; removed on shutdown. Listings resolve Git worktree, branch and HEAD live from each cwd, so stale Git metadata is never registered.
 - **Data plane**: each instance owns a `0600` Unix socket (named pipe on Windows) under a `0700` per-UID runtime directory, namespace-isolated by a hash of the agent dir.
 - **Protocol**: two-phase JSONL v1 — authenticated `hello` → one `message` (or `status`) frame → receipt. `cancel-safe-queue-v1` is negotiated in hello/ready. Old senders retain safe-idle compatibility but get actionable `busy` refusal instead of an unknown queued receipt. New senders refuse old receivers lacking the capability, before sending any message. Paths use random instance IDs, never persistent session IDs.
 - **Bounds**: 1 MiB raw UTF-8 per-frame cap (including LF/BOM and incomplete tails, not a combined chunk), 5s exchange deadline including endpoint vetting/lstat, 30s connection deadline, 64 incoming connections, 30-cap/0.5-per-second per-sender token bucket, 30s sender-qualified hashed same-text suppression (including A/B/A across settled), 50 pending messages, 30s queue/message TTL. IDs are deduplicated per authenticated sender incarnation for the recipient incarnation. A **shared 256-unit incarnation budget** covers inbound admissions and outbound exchange attempts, including bridges; settled/user-resume never replenishes it. Admission reserves identity/quota before trusted event callbacks; later drops/failures retain their status and reservation. No automatic retry.

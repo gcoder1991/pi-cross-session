@@ -1,11 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { component, wire, message, hello, info } from './support/component.mjs';
-import { sleep, registrations, until } from './support/sdk.mjs';
+import { repo, sleep, registrations, until } from './support/sdk.mjs';
 async function fixtures(fn, options = {}) { const a = await component('sender'), b = await component('receiver', options); try { await fn(a, b); } finally { await b.close(); await a.close(); } }
+
+test('list_pi: resolves current Git worktree, branch and HEAD; non-Git cwd is null', async () => fixtures(async (a, b) => {
+  a.ctx.cwd = b.ctx.cwd = repo; await a.emit('session_info_changed'); await b.emit('session_info_changed');
+  const [expectedRoot, expectedHead, expectedBranch] = execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel', 'HEAD', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim().split('\n');
+  const listing = await a.tool('list_pi', {});
+  assert.deepEqual(listing.details.self.git, { worktree: expectedRoot, branch: expectedBranch === 'HEAD' ? null : expectedBranch, head: expectedHead });
+  assert.deepEqual(listing.details.peers.find(peer => peer.instanceId === b.peer.instanceId).git, listing.details.self.git);
+  assert.ok(listing.content[0].text.includes(`@${expectedHead.slice(0, 8)}) — session `));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cross-nongit-'));
+  try {
+    b.ctx.cwd = outside; await b.emit('session_info_changed');
+    const refreshed = await a.tool('list_pi', {});
+    assert.equal(refreshed.details.peers.find(peer => peer.instanceId === b.peer.instanceId).git, null);
+    assert.match(refreshed.content[0].text, / — git none — session /);
+  } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+}));
 
 test('component/IPC: legacy idle submitted, legacy busy refuses BEFORE SDK; new busy queues; duplicate ID', async () => fixtures(async (a, b) => {
   const m = message('legacy-idle'); assert.equal((await wire(a, b, m, { safe: false })).status, 'submitted'); assert.equal(b.calls.length, 1);

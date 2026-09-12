@@ -1,11 +1,12 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text, type AutocompleteProvider } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { TextDecoder } from "node:util";
+import { promisify, TextDecoder } from "node:util";
 import { CAPABILITY, RPC_SEND, RPC_INFO, RECEIVED, bridgeEnvelope, validId, validInstance, type SendRequest } from "../lib/contract";
 
 const REGISTRATION_VERSION = 2;
@@ -26,6 +27,7 @@ const PROBE_TIMEOUT_MS = 350;
 const FIRST_LINE_TIMEOUT_MS = 30_000;
 const HEARTBEAT_MS = 30_000;
 const agentDir = getAgentDir();
+const execFileAsync = promisify(execFile);
 const runtimeNamespace = createHash("sha256").update(agentDir).digest("hex").slice(0, 12);
 const baseDir = join(agentDir, "peers");
 const runtimeDir = process.platform === "win32" ? "" : `/tmp/pi-peers-${process.getuid?.() ?? 0}-${runtimeNamespace}`;
@@ -50,7 +52,8 @@ type Peer = {
   token: string;
 };
 
-type PublicPeer = Omit<Peer, "token"> & { ref: string };
+type GitContext = { worktree: string; branch: string | null; head: string };
+type PublicPeer = Omit<Peer, "token"> & { ref: string; git?: GitContext | null };
 
 type HelloFrame = {
   v: 1;
@@ -161,13 +164,27 @@ function short(value: string, length = 8) {
   return value.slice(0, length);
 }
 
-function publicPeer(peer: Peer): PublicPeer {
+function publicPeer(peer: Peer, git?: GitContext | null): PublicPeer {
   const { token: _token, ...rest } = peer;
-  return { ...rest, ref: short(peer.instanceId) };
+  return { ...rest, ref: short(peer.instanceId), ...(git !== undefined && { git }) };
+}
+
+async function gitContext(cwd: string): Promise<GitContext | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", cwd, "rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 1_500, maxBuffer: 128 * 1024, windowsHide: true });
+    const lines = String(stdout).replace(/\r?\n$/, "").split(/\r?\n/);
+    const branch = lines.pop(), head = lines.pop(), worktree = lines.join("\n");
+    if (!worktree || !head || !/^[0-9a-f]{40,64}$/.test(head) || !branch) return null;
+    return { worktree, branch: branch === "HEAD" ? null : branch, head };
+  } catch {
+    return null;
+  }
 }
 
 function displayPeer(peer: Peer | PublicPeer) {
-  return `${cleanName(peer.name)} [${"ref" in peer ? peer.ref : short(peer.instanceId)}] — ${peer.status} — ${cleanLine(peer.cwd, 500)} — session ${cleanLine(peer.id, 200)}`;
+  const git = "git" in peer ? peer.git : undefined;
+  const suffix = git === undefined ? "" : git ? ` — git ${cleanLine(git.worktree, 500)} (${cleanLine(git.branch ?? "detached", 200)}@${short(git.head)})` : " — git none";
+  return `${cleanName(peer.name)} [${"ref" in peer ? peer.ref : short(peer.instanceId)}] — ${peer.status} — ${cleanLine(peer.cwd, 500)}${suffix} — session ${cleanLine(peer.id, 200)}`;
 }
 
 function equalSecret(left: unknown, right: string) {
@@ -896,9 +913,18 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function peersText(peers: Peer[]) {
-    const self = current ? `This session: ${displayPeer(current)}` : "This session: cross-session inbox unavailable";
-    return `${self}\n${peers.length ? peers.map(displayPeer).join("\n") : "No other live Pi sessions."}`;
+  async function peersListing(peers: Peer[]) {
+    const snapshot = current;
+    const [self, listed] = await Promise.all([
+      snapshot ? gitContext(snapshot.cwd).then(git => publicPeer(snapshot, git)) : null,
+      Promise.all(peers.map(async peer => publicPeer(peer, await gitContext(peer.cwd)))),
+    ]);
+    return { self, peers: listed };
+  }
+
+  function peersText(self: PublicPeer | null, peers: PublicPeer[]) {
+    const currentText = self ? `This session: ${displayPeer(self)}` : "This session: cross-session inbox unavailable";
+    return `${currentText}\n${peers.length ? peers.map(displayPeer).join("\n") : "No other live Pi sessions."}`;
   }
 
   pi.registerMessageRenderer("cross-session", (message, { expanded, outputPad }, theme) => {
@@ -920,14 +946,14 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "list_pi",
     label: "List Pi Sessions",
-    description: "List other live Pi sessions with exact addressing metadata, status, and working directory so the model can choose a coordination target",
+    description: "List other live Pi sessions with exact addressing metadata, status, working directory, and Git worktree/branch/HEAD so the model can choose a coordination target",
     promptSnippet: "List other live Pi sessions when a coordination target is not explicit",
     parameters: Type.Object({}),
     async execute() {
-      const peers = await livePeers();
+      const listing = await peersListing(await livePeers());
       return {
-        content: [{ type: "text", text: peersText(peers) }],
-        details: { self: current ? publicPeer(current) : null, peers: peers.map(publicPeer) },
+        content: [{ type: "text", text: peersText(listing.self, listing.peers) }],
+        details: listing,
       };
     },
   });
@@ -959,12 +985,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("peers", {
     description: "List other live Pi sessions",
-    handler: async (_args, ctx) => ctx.ui.notify(peersText(await livePeers()), "info"),
+    handler: async (_args, ctx) => { const listing = await peersListing(await livePeers()); ctx.ui.notify(peersText(listing.self, listing.peers), "info"); },
   });
 
   pi.registerCommand("list-pi", {
     description: "Alias for /peers",
-    handler: async (_args, ctx) => ctx.ui.notify(peersText(await livePeers()), "info"),
+    handler: async (_args, ctx) => { const listing = await peersListing(await livePeers()); ctx.ui.notify(peersText(listing.self, listing.peers), "info"); },
   });
 
   pi.on("session_start", (_event, ctx) => {
