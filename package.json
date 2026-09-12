@@ -17,16 +17,21 @@
     "url": "git+https://github.com/gcoder1991/pi-cross-session.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "files": [
     "extensions",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "lib",
+    "test",
+    "tsconfig.json",
+    "HANDOFF.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/smoke.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs"
   },
   "pi": {
     "extensions": [
