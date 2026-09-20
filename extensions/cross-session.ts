@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { promisify, TextDecoder } from "node:util";
 import { CAPABILITY, RPC_SEND, RPC_INFO, RECEIVED, bridgeEnvelope, validId, validInstance, type SendRequest } from "../lib/contract";
 
+import { MESH_CONTINUATION, MeshContinuations } from "../lib/mesh-continuation";
+
 const REGISTRATION_VERSION = 2;
 const WIRE_VERSION = 1;
 const MAX_FRAME_BYTES = 1_048_576;
@@ -468,7 +470,10 @@ export default function (pi: ExtensionAPI) {
   let turnCancelled = false;
   let terminalSuccess = false;
   let phase: "idle" | "preflight" | "busy" = "idle";
-  let provenance: "user" | "peer" | "unknown" = "unknown";
+  const continuations = new MeshContinuations();
+  let offContinuation: (() => void) | undefined;
+  const continuationScope = (ctx: ExtensionContext) => ({ sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd });
+  let provenance: "user" | "peer" | "mesh" | "unknown" = "unknown";
   let inputSource: "user" | "unknown" = "unknown";
   let activeSignal: AbortSignal | undefined;
   let unwatch = () => {};
@@ -511,7 +516,7 @@ export default function (pi: ExtensionAPI) {
     status(key, reason);
   }
   function latch() {
-    stopped = true; turnCancelled = true;
+    stopped = true; turnCancelled = true; continuations.revoke();
     for (const entry of [...pending]) dropPending(entry.key, "dropped_cancelled");
   }
   function submit(details: IncomingDetails, key: string) {
@@ -995,6 +1000,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     // Fence immediately, including while an earlier asynchronous start is running.
+    continuations.revoke(); offContinuation?.(); offContinuation = undefined;
     const requestedEpoch = ++epoch; shuttingDown = true; incarnationAbort.abort();
     authoritySessionId = undefined; unwatch(); unwatch = () => {}; activeSignal = undefined;
     submittedKey = undefined; provenance = "unknown"; inputSource = "unknown";
@@ -1072,6 +1078,7 @@ export default function (pi: ExtensionAPI) {
       await writeRegistration(ctx);
       if (shuttingDown || epoch !== startingEpoch) { await cleanup(); return; }
       authoritySessionId = sessionId;
+      offContinuation = pi.events.on(MESH_CONTINUATION, request => continuations.issue(request));
       heartbeat = setInterval(() => void writeRegistration().catch(() => { void cleanup(); }), HEARTBEAT_MS);
       heartbeat.unref();
       void livePeers().catch(() => {});
@@ -1091,6 +1098,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", (event, ctx) => {
     if (!observes(ctx)) return;
+    if (event.source === "interactive" || event.source === "rpc") continuations.revoke();
     // A downstream input handler may consume preflight without any SDK run.
     // Only a new observable idle input can replace that pending source; never
     // overwrite a busy retry/continuation or our own submitted peer preflight.
@@ -1111,6 +1119,14 @@ export default function (pi: ExtensionAPI) {
     setCurrent(ctx, { status: "busy" });
     await writeRegistration(ctx);
   });
+  pi.on("message_start", (event, ctx) => {
+    if (!observes(ctx)) return;
+    const message = event.message;
+    if (message.role !== "custom" && message.role !== "user") return;
+    if (continuations.message(message.role === "custom" ? message.details : undefined,
+      phase === "busy" && provenance !== "peer" && !turnCancelled && !!activeSignal && !activeSignal.aborted,
+      continuationScope(ctx))) provenance = "mesh";
+  });
   pi.on("message_end", (event, ctx) => {
     if (!observes(ctx)) return;
     const message = event.message;
@@ -1127,15 +1143,18 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", async (_event, ctx) => {
     if (!observes(ctx)) return;
     currentCtx = ctx;
-    const safe = terminalSuccess && !!activeSignal && !activeSignal.aborted && provenance !== "unknown" && !turnCancelled && !stopped;
+    // stopped fences peer reception, not a fresh user-authorized logical turn.
+    // Keep that old inbox latch closed without revoking the new turn's plans.
+    const safe = terminalSuccess && !!activeSignal && !activeSignal.aborted && provenance !== "unknown" && !turnCancelled;
     if (!safe) latch(); // Includes error/backoff cancellation and unobserved terminal outcome.
     unwatch(); unwatch = () => {}; activeSignal = undefined;
+    continuations.settle();
     phase = "idle"; provenance = "unknown"; submittedKey = undefined;
     const settledEpoch = ++epoch;
     setCurrent(ctx, { status: "idle" });
     await writeRegistration(ctx);
     // Do not submit inside the old SDK run's awaited lifecycle stack.
-    if (safe && !shuttingDown) {
+    if (safe && !stopped && !shuttingDown) {
       flushTimer = setTimeout(() => {
         flushTimer = undefined;
         if (epoch !== settledEpoch || stopped || shuttingDown || phase !== "idle" || !ctx.isIdle()) return;
@@ -1150,7 +1169,11 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("tool_call", (event, ctx) => {
     if (!observes(ctx)) return;
-    if (provenance === "user" && !turnCancelled) return;
+    if (provenance === "user" && !turnCancelled && !(event.toolName === "mesh" && event.input.action === "continue")) {
+      if (event.toolName === "mesh") continuations.note(event.toolCallId, event.input, continuationScope(ctx));
+      return;
+    }
+    if (event.toolName === "mesh" && provenance === "mesh" && !turnCancelled && !ctx.signal?.aborted && continuations.allow(event.toolCallId, event.input, continuationScope(ctx))) return;
     // Explicit known authority-bearing entry points, not a classifier for arbitrary Bash.
     const sensitive = ["Agent", "agent", "subagent", "steer_subagent", "send_subagent", "send_user_message", "set_active_tools", "set_config"].includes(event.toolName) ||
       event.toolName === "mesh" && !["list_agents", "status", "list", "handoff_list", "message_inbox", "message_ack", "growth_list"].includes(String(event.input.action)) ||
@@ -1171,5 +1194,5 @@ export default function (pi: ExtensionAPI) {
     description: "Show bounded local admission/submission diagnostics (not delivery success)",
     handler: async (_args, ctx) => ctx.ui.notify(JSON.stringify({ stopped, phase, remainingBudget: budget, pending: pending.length, messages: [...statuses.values()] }), "info"),
   });
-  pi.on("session_shutdown", () => { epoch++; shuttingDown = true; incarnationAbort.abort(); lifecycle = lifecycle.catch(() => {}).then(cleanup); return lifecycle; });
+  pi.on("session_shutdown", () => { continuations.revoke(); offContinuation?.(); offContinuation = undefined; epoch++; shuttingDown = true; incarnationAbort.abort(); lifecycle = lifecycle.catch(() => {}).then(cleanup); return lifecycle; });
 }
