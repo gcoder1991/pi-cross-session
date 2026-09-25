@@ -101,7 +101,9 @@ test('Peer text cannot issue or borrow a completion capability, even with identi
   try {
     await x.busy(); const p = await issue(x); await x.settled(); const details = {}; assert.ok(p.complete(details));
     assert.equal((await wire(a, x, undefined)).status, 'submitted');
-    await auto(x, details); assert.equal(await issue(x, 'peer-issue'), undefined); assert.equal((await gate(x)).block, true); assert.equal(p.claim('next'), false);
+    await auto(x, details);
+    assert.ok(x.calls.some(c => c.message?.customType === 'cross-session' && /permission laundering/.test(String(c.message.content)) && /Never edit permission settings/.test(String(c.message.content))), 'peer disclaimer carries anti-laundering wording');
+    assert.equal(await issue(x, 'peer-issue'), undefined); assert.equal((await gate(x)).block, true); assert.equal(p.claim('next'), false);
   } finally { await x.close(); await a.close(); }
 });
 

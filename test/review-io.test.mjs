@@ -16,6 +16,7 @@ syncBuiltinESMExports();
 const files = () => [process.env.PI_CODING_AGENT_DIR + '/peers', runtimeDir].flatMap(d => fs.existsSync(d) ? fs.readdirSync(d).map(f => d + '/' + f) : []).sort();
 
 for (const fault of ['idle', 'mode', 'tui', 'partial-rpc', 'write-notify-getter', 'write-notify-method']) test(`review start cleanup: ${fault}, private resources/listeners baseline and other Host intact`, async () => {
+  const endpoint = process.env.PI_CROSS_MESSAGING_ENDPOINT;
   const a = await component('independent-host'); await sleep(30);
   const baseline = files(), listeners = process.listenerCount('beforeExit'); let hits = 0, subscriptions = 0, b;
   writeHook = async (file, data) => { if (fault.startsWith('write') && String(data).includes('fault-host')) { hits++; throw Error('fixture start I/O failure'); } };
@@ -32,6 +33,7 @@ for (const fault of ['idle', 'mode', 'tui', 'partial-rpc', 'write-notify-getter'
     assert.equal(subscriptions, 0); assert.equal(info(b), undefined);
     assert.deepEqual(files(), baseline); assert.equal(process.listenerCount('beforeExit'), listeners);
     assert.equal((await wire(undefined, a, null)).status, 'ready');
+    assert.equal(process.env.PI_CROSS_MESSAGING_ENDPOINT, endpoint, 'failed startup must not change process-wide endpoint environment');
     console.log(JSON.stringify({ evidence: 'start fault hit and cleaned', fault, hits, subscriptions }));
   } finally { writeHook = async () => {}; await b?.close(); await a.close(); }
 });
