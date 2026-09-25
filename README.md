@@ -60,7 +60,7 @@ An observed abort (including unknown/internal abort) latches reception closed an
 
 The trust boundary is the OS user. Bearer tokens, file modes, owner checks, and symlink rejection defend against other OS users, stale endpoints, path substitution, and accidental clients. A malicious process **running as the same UID** can read registration tokens and impersonate a sender — this is an explicit, documented boundary, not an oversight.
 
-Messages from peers are plain text from another agent, never user intent: they cannot grant permissions, approve actions, execute slash commands, or change configuration. In addition to the displayed statement, a `tool_call` gate blocks known task/growth/resume/configuration entry points on peer-only, unknown-source or currently cancelled logical turns, preserved across retry/continuation (including `Agent`, `send_subagent`, authority-changing `mesh` actions and `mesh_control grow`). It does **not** classify arbitrary Bash, wrap every third-party tool, or sandbox trusted extensions. Existing user-directed busy turns and new genuine user turns retain their authority. This does not clear Direct/Mesh tools’ own user-cancel locks. Inbox I/O cleanup removes endpoints/listeners, not SDK work or its turn authority: the registered Session keeps observing cancellation/continuation and gating known tools even with its inbox gone. A downstream `input` handler returning `handled` need not emit any agent lifecycle events; the next observable input replaces its stale pending source only when the SDK is idle, has no active signal, and Cross owns no peer submission. Busy retry/continuation and peer preflight cannot be relabelled this way. Managed/never-registered contexts are not enrolled in this Host gate, and session rebinding cannot inherit a prior Session's user authority. The receiving Host's permission system remains the final defense.
+Messages from peers are plain text from another agent, never user intent: they cannot grant permissions, approve actions, execute slash commands, or change configuration. In addition to the displayed statement, a `tool_call` gate blocks known task/growth/resume/configuration entry points on peer-only or currently cancelled logical turns, preserved across retry/continuation (including `Agent`, `send_subagent`, authority-changing `mesh` actions and `mesh_control grow`). Turns driven by trusted in-process extension notifications (Mesh/Direct completions delivered as custom messages by this Pi process) are **not** gated: they may create runs and agents without extra local confirmation. The gate does **not** classify arbitrary Bash, wrap every third-party tool, or sandbox trusted extensions. Existing user-directed busy turns and new genuine user turns retain their authority. This does not clear Direct/Mesh tools' own user-cancel locks. Inbox I/O cleanup removes endpoints/listeners, not SDK work or its turn authority: the registered Session keeps observing cancellation/continuation and gating known tools even with its inbox gone. A downstream `input` handler returning `handled` need not emit any agent lifecycle events; the next observable input replaces its stale pending source only when the SDK is idle, has no active signal, and Cross owns no peer submission. Busy retry/continuation and peer preflight cannot be relabelled this way. Managed/never-registered contexts are not enrolled in this Host gate, and session rebinding cannot inherit a prior Session's user authority. The receiving Host's permission system remains the final defense.
 
 ### Fixed Mesh continuation (trusted EventBus, not peer RPC)
 
@@ -81,11 +81,22 @@ interactive/RPC input, session startup/replacement, reload and shutdown revoke
 old permits. A claim cannot cross a settled turn. Duplicate deliveries and
 failed executions do not refund authorization; expiry/restart never restores it.
 
+An initial genuine user Mesh run may alternatively opt into
+`autoContinuation: {}` (optionally `maxRuns`) for one original task. A
+successful first-attempt stage then permits a `mesh continue` with only its
+`runId` and one phase (`repair`, `verify`, `load-test`). Mesh constructs the
+next task from the original agent/task and previous run evidence; completions
+may repeat with no count or time cap — the chain ends when the Host stops
+calling continue, and any failed/retried/cancelled stage, new user input,
+session replacement or reload revokes it. Peer text and cancelled turns stay
+gated; a genuine in-process notification turn may also start new `mesh run`
+work directly without extra local confirmation.
+
 This does not whitelist all Mesh actions, grant arbitrary `run`, growth,
 resume/configuration/Direct permissions, clear cancellation locks, enable peer
 reception, or depend on the opt-in bridge RPC flag. Mesh verifies original-epoch
 all-first-attempt success and its own current Host/root/cancel fences before
-creation. Unplanned follow-up tasks still require a new local user instruction.
+creation. Unrelated follow-up tasks still require a new local user instruction.
 Both updated extensions must be loaded; an absent capability always fails closed.
 Trusted extensions sharing the EventBus remain outside the security sandbox,
 as in the existing Cross contract. SDKs that stop preserving live message

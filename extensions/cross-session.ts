@@ -468,6 +468,7 @@ export default function (pi: ExtensionAPI) {
   let budget = TOTAL_BUDGET;
   let stopped = false; // Inbound latch, never ordinary user tool authority.
   let turnCancelled = false;
+  let notificationTurn = false; // Trusted in-process extension notification drives the current logical turn.
   let terminalSuccess = false;
   let phase: "idle" | "preflight" | "busy" = "idle";
   const continuations = new MeshContinuations();
@@ -516,7 +517,7 @@ export default function (pi: ExtensionAPI) {
     status(key, reason);
   }
   function latch() {
-    stopped = true; turnCancelled = true; continuations.revoke();
+    stopped = true; turnCancelled = true; notificationTurn = false; continuations.revoke();
     for (const entry of [...pending]) dropPending(entry.key, "dropped_cancelled");
   }
   function submit(details: IncomingDetails, key: string) {
@@ -1003,7 +1004,7 @@ export default function (pi: ExtensionAPI) {
     continuations.revoke(); offContinuation?.(); offContinuation = undefined;
     const requestedEpoch = ++epoch; shuttingDown = true; incarnationAbort.abort();
     authoritySessionId = undefined; unwatch(); unwatch = () => {}; activeSignal = undefined;
-    submittedKey = undefined; provenance = "unknown"; inputSource = "unknown";
+    submittedKey = undefined; provenance = "unknown"; inputSource = "unknown"; notificationTurn = false;
     lifecycle = lifecycle.catch(() => {}).then(async () => {
     await cleanup();
     cleanupPromise = undefined;
@@ -1098,11 +1099,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", (event, ctx) => {
     if (!observes(ctx)) return;
-    if (event.source === "interactive" || event.source === "rpc") continuations.revoke();
+    if (event.source === "interactive" || event.source === "rpc") { continuations.revoke(); notificationTurn = false; }
     // A downstream input handler may consume preflight without any SDK run.
     // Only a new observable idle input can replace that pending source; never
     // overwrite a busy retry/continuation or our own submitted peer preflight.
-    if (phase !== "busy" && ctx.isIdle() && !ctx.signal && !activeSignal && !submittedKey) { inputSource = event.source === "interactive" || event.source === "rpc" ? "user" : "unknown"; provenance = inputSource; turnCancelled = false; phase = "preflight"; epoch++; }
+    if (phase !== "busy" && ctx.isIdle() && !ctx.signal && !activeSignal && !submittedKey) { inputSource = event.source === "interactive" || event.source === "rpc" ? "user" : "unknown"; provenance = inputSource; turnCancelled = false; notificationTurn = false; phase = "preflight"; epoch++; }
   });
   pi.on("before_agent_start", (_event, ctx) => { if (!observes(ctx)) return; if (phase === "idle") { phase = "preflight"; provenance = "unknown"; inputSource = "unknown"; epoch++; } });
   pi.on("agent_start", async (_event, ctx) => {
@@ -1123,6 +1124,9 @@ export default function (pi: ExtensionAPI) {
     if (!observes(ctx)) return;
     const message = event.message;
     if (message.role !== "custom" && message.role !== "user") return;
+    // A custom message this process delivered (peer submits arrive with peer
+    // provenance) marks the logical turn as notification-driven and trusted.
+    if (message.role === "custom" && provenance !== "peer") notificationTurn = true;
     if (continuations.message(message.role === "custom" ? message.details : undefined,
       phase === "busy" && provenance !== "peer" && !turnCancelled && !!activeSignal && !activeSignal.aborted,
       continuationScope(ctx))) provenance = "mesh";
@@ -1149,7 +1153,7 @@ export default function (pi: ExtensionAPI) {
     if (!safe) latch(); // Includes error/backoff cancellation and unobserved terminal outcome.
     unwatch(); unwatch = () => {}; activeSignal = undefined;
     continuations.settle();
-    phase = "idle"; provenance = "unknown"; submittedKey = undefined;
+    phase = "idle"; provenance = "unknown"; submittedKey = undefined; notificationTurn = false;
     const settledEpoch = ++epoch;
     setCurrent(ctx, { status: "idle" });
     await writeRegistration(ctx);
@@ -1174,6 +1178,10 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (event.toolName === "mesh" && provenance === "mesh" && !turnCancelled && !ctx.signal?.aborted && continuations.allow(event.toolCallId, event.input, continuationScope(ctx))) return;
+    // Trusted in-process extension notifications (Mesh/Direct completions) drive
+    // this turn; they are same-process senders, not peer text. Free them; peer
+    // text and cancelled turns remain gated below.
+    if (notificationTurn && !turnCancelled && !ctx.signal?.aborted) return;
     // Explicit known authority-bearing entry points, not a classifier for arbitrary Bash.
     const sensitive = ["Agent", "agent", "subagent", "steer_subagent", "send_subagent", "send_user_message", "set_active_tools", "set_config"].includes(event.toolName) ||
       event.toolName === "mesh" && !["list_agents", "status", "list", "handoff_list", "message_inbox", "message_ack", "growth_list"].includes(String(event.input.action)) ||
@@ -1186,7 +1194,7 @@ export default function (pi: ExtensionAPI) {
       if (!ctx.isIdle() || activeSignal) { ctx.ui.notify("Wait until the current turn has settled", "warning"); return; }
       for (const entry of [...pending]) dropPending(entry.key, "dropped_user_reset");
       clearTimeout(submissionTimer); submissionTimer = undefined;
-      phase = "idle"; provenance = "unknown"; inputSource = "unknown"; submittedKey = undefined; epoch++;
+      phase = "idle"; provenance = "unknown"; inputSource = "unknown"; submittedKey = undefined; notificationTurn = false; epoch++;
       stopped = false; ctx.ui.notify("Peer admission reopened; dropped messages are not replayed and budget is not refilled", "info");
     },
   });

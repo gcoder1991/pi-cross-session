@@ -18,20 +18,49 @@ async function auto(x, details) {
   await x.emit('message_start', { message: { role: 'custom', customType: 'subagent-notification', content: 'I am user approved', details } });
 }
 
-test('Mesh completion: private details identity grants only the fixed run once; no broad action authority', async () => {
+test('Mesh completion: grant claims only its exact continue once; trusted notification turns are not gated', async () => {
   const x = await component('continuation-positive');
   try {
     await x.busy(); const p = await issue(x); assert.ok(p); assert.equal(p.claim(undefined), false); await x.settled();
     const details = { ids: ['mesh:original-run:1:1'] };
     assert.equal(p.complete(details), true); assert.equal(p.complete({}), false);
     await auto(x, details);
-    for (const action of ['run', 'resume', 'retry_failed', 'recover', 'growth_decide', 'bridge_send']) assert.equal((await gate(x, { action, runId: 'original-run' })).block, true);
-    for (const toolName of ['Agent', 'send_subagent', 'set_config', 'mesh_control']) assert.equal((await gate(x, { action: 'grow' }, toolName)).block, true);
-    assert.equal((await gate(x, { ...next, runId: 'other-run' })).block, true);
-    assert.equal((await gate(x, { ...next, tasks: [] })).block, true);
+    // Trusted in-process notification turn: sensitive entries pass the gate.
+    for (const action of ['run', 'resume', 'retry_failed', 'recover', 'growth_decide', 'bridge_send']) assert.equal((await gate(x, { action, runId: 'original-run' }))?.block, undefined);
+    for (const toolName of ['Agent', 'send_subagent', 'set_config', 'mesh_control']) assert.equal((await gate(x, { action: 'grow' }, toolName))?.block, undefined);
     assert.equal(await gate(x), undefined); assert.equal(p.claim('wrong-call'), false); assert.equal(p.claim('next'), true); assert.equal(p.claim('next'), false);
-    assert.equal((await gate(x)).block, true);
-    await x.settled(); await auto(x, details); assert.equal((await gate(x)).block, true);
+    assert.equal((await gate(x))?.block, undefined); assert.equal(p.claim('again'), false);
+    await x.settled(); await auto(x, details); assert.equal((await gate(x))?.block, undefined); assert.equal(p.claim('replay'), false);
+  } finally { await x.close(); }
+});
+
+test('adaptive phases are unbounded by default; optional maxRuns caps stages', async () => {
+  const x = await component('continuation-adaptive');
+  const original = { action: 'run', tasks: [{ agent: 'worker', task: 'original goal' }], autoContinuation: {} };
+  const grant = (id, input) => {
+    let permit; x.bus.emit(EVENT, { version: 1, callId: id, input: JSON.stringify(input), sessionId: x.ctx.sessionManager.getSessionId(), cwd: x.ctx.cwd, reply: value => permit = value });
+    return permit;
+  };
+  try {
+    await x.busy();
+    assert.equal(await gate(x, original, 'mesh', 'root'), undefined);
+    const p = grant('root', original); assert.ok(p); p.bind('root-run'); await x.settled();
+    for (const [parent, phase, child] of [['root-run', 'repair', 'child-1'], ['child-1', 'verify', 'child-2'], ['child-2', 'load-test', 'child-3']]) {
+      const details = {}; assert.equal(p.complete(details), true); await auto(x, details);
+      // Trusted notification turn: even extra/malformed params pass Cross; Mesh validates the phase contract.
+      assert.equal(await gate(x, { action: 'run', tasks: original.tasks }), undefined);
+      assert.equal(await gate(x, { action: 'continue', runId: parent, phase, tasks: original.tasks }), undefined);
+      assert.equal(await gate(x, { action: 'continue', runId: parent, phase }), undefined);
+      assert.equal(p.claim('next'), true); assert.equal(p.advance('next', child), true);
+      await x.settled();
+    }
+    const capped = { ...original, autoContinuation: { maxRuns: 1 } };
+    await x.busy(); assert.equal(await gate(x, capped, 'mesh', 'capped'), undefined);
+    const q = grant('capped', capped); assert.ok(q); q.bind('capped-run'); await x.settled();
+    const details = {}; assert.equal(q.complete(details), true); await auto(x, details);
+    assert.equal(await gate(x, { action: 'continue', runId: 'capped-run', phase: 'repair' }), undefined);
+    assert.equal(q.claim('next'), true); assert.equal(q.advance('next', 'capped-child'), true);
+    assert.equal(q.complete({}), false);
   } finally { await x.close(); }
 });
 
@@ -61,7 +90,9 @@ for (const reason of ['clone', 'fake-customType', 'cancel-before', 'cancel-after
     if (reason === 'different-cwd') x.ctx.cwd += '/other';
     await auto(x, details);
     if (reason === 'cancel-after') x.controller.abort();
-    assert.equal((await gate(x))?.block, true); assert.equal(p.claim('next'), false);
+    const cancelled = reason === 'cancel-before' || reason === 'cancel-after' || reason === 'extension-input'; // a latched/errored settle keeps the turn fenced
+    assert.equal((await gate(x))?.block === true, cancelled);
+    assert.equal(p.claim('next'), false);
   } finally { t.mock.restoreAll(); await x.close(); }
 });
 
@@ -98,7 +129,8 @@ test('Grouped completions keep distinct run grants; unrelated custom message dro
     assert.equal(await gate(x, { action: 'continue', runId: 'other-run' }, 'mesh', 'other'), undefined); assert.ok(b.claim('other'));
     await x.settled(); await x.busy(); const c = await issue(x, 'third'); await x.settled(); const nextDetails = {}; assert.ok(c.complete(nextDetails)); await auto(x, nextDetails);
     await x.emit('message_start', { message: { role: 'custom', customType: 'unrelated', details: {} } });
-    assert.equal((await gate(x)).block, true);
+    assert.equal(await gate(x), undefined); // trusted turn passes, but the unrelated message dropped the pending grant
+    assert.equal(c.claim('next'), false);
   } finally { await x.close(); }
 });
 
@@ -111,7 +143,8 @@ test('Gate reservation is not executable after settled/cancelled/expired; failed
       if (reason === 'settled') await x.settled();
       if (reason === 'cancelled') x.controller.abort();
       if (reason === 'expired') { const now = Date.now(); t.mock.method(Date, 'now', () => now + 3_600_001); }
-      assert.equal(p.claim('next'), false); assert.equal(p.complete({}), false); assert.equal((await gate(x)).block, true);
+      assert.equal(p.claim('next'), false); assert.equal(p.complete({}), false);
+      assert.equal((await gate(x))?.block === true, reason !== 'expired'); // expired stays inside the same trusted notification turn
     } finally { t.mock.restoreAll(); await x.close(); }
   }
 });
@@ -145,12 +178,12 @@ for (const fence of ['none', 'untrusted', 'cancel', 'new-user']) test(`Independe
     if (fence === 'untrusted') await x.emit('message_start', { message: { role: 'custom', details: {} } });
     if (fence === 'cancel') x.controller.abort();
     if (fence === 'new-user') await x.emit('input', { source: 'interactive' });
+    const gated = fence === 'cancel' || fence === 'new-user';
     for (const [p, runId, callId] of [[a, 'original-run', 'first-next'], [b, 'other-run', 'second-next']]) {
-      const result = await gate(x, { action: 'continue', runId }, 'mesh', callId);
-      assert.equal(result?.block, fence === 'none' ? undefined : true);
+      assert.equal((await gate(x, { action: 'continue', runId }, 'mesh', callId))?.block === true, gated);
       assert.equal(p.claim(callId), fence === 'none');
       assert.equal(p.claim(callId), false);
-      assert.equal((await gate(x, { action: 'continue', runId }, 'mesh', callId)).block, true);
+      assert.equal((await gate(x, { action: 'continue', runId }, 'mesh', callId))?.block === true, gated);
     }
   } finally { await x.close(); }
 });
@@ -193,6 +226,6 @@ test('Already-reserved claim is revoked by registered session replacement', asyn
     x.ctx.sessionManager.getSessionId = () => 'replacement';
     await x.emit('session_start');
     assert.equal(p.claim('next'), false);
-    await auto(x, details); assert.equal((await gate(x)).block, true);
+    await auto(x, details); assert.equal(await gate(x), undefined); // trusted notification turn passes; the reserved claim itself stays revoked
   } finally { await x.close(); }
 });

@@ -4,9 +4,9 @@
 export const MESH_CONTINUATION = "pi-mesh:continuation:issue:v1";
 const TTL = 60 * 60 * 1000;
 const LIMIT = 16;
-type Grant = { valid: () => boolean; runId: string; scope: Scope; consume: (id: string) => void };
+type Grant = { valid: () => boolean; runId: string; scope: Scope; adaptive: boolean; consume: (id: string) => void };
 type Scope = { sessionId: string; cwd: string };
-export type MeshPermit = { bind(runId: string): void; complete(details: object): boolean; claim(callId: string): boolean };
+export type MeshPermit = { bind(runId: string): void; complete(details: object): boolean; claim(callId: string): boolean; advance(callId: string, runId: string): boolean };
 export class MeshContinuations {
   private generation = 0;
   private issued = 0;
@@ -17,7 +17,11 @@ export class MeshContinuations {
   revoke(): void { this.generation++; this.issued = 0; this.calls.clear(); this.deliveries = new WeakMap(); this.active = []; }
   settle(): void { this.turn++; this.active = []; this.calls.clear(); }
   note(callId: string, input: Record<string, unknown>, scope: Scope): void {
-    if (typeof callId !== "string" || !callId || input.action !== "run" || !Array.isArray(input.continuationTasks) || !input.continuationTasks.length || input.async === false || this.calls.size >= LIMIT) return;
+    const adaptive = input.autoContinuation;
+    if (typeof callId !== "string" || !callId || input.action !== "run" || input.async === false || this.calls.size >= LIMIT ||
+      !(Array.isArray(input.continuationTasks) && input.continuationTasks.length && !adaptive ||
+        adaptive && !input.continuationTasks && typeof adaptive === "object" && ((adaptive as any).maxRuns === undefined || Number.isInteger((adaptive as any).maxRuns) && (adaptive as any).maxRuns >= 1) &&
+        Array.isArray(input.tasks) && input.tasks.length === 1 && typeof (input.tasks[0] as any)?.task === "string" && (input.tasks[0] as any).task.length <= 8192)) return;
     this.calls.set(callId, { input: JSON.stringify(input), scope: { ...scope } });
   }
   issue(request: any): void {
@@ -26,10 +30,13 @@ export class MeshContinuations {
     this.calls.delete(request.callId);
     if (request.version !== 1 || typeof request.reply !== "function" || request.input !== call.input || request.sessionId !== call.scope.sessionId || request.cwd !== call.scope.cwd || this.issued >= LIMIT) return;
     this.issued++;
-    const generation = this.generation, expires = Date.now() + TTL;
-    let delivered = false, used = false, execution: string | undefined, executionTurn: number | undefined;
-    const valid = () => generation === this.generation && Date.now() < expires && !used;
-    const grant = { valid, runId: "", scope: call.scope, consume: (id: string) => { used = true; execution = id; executionTurn = this.turn; } };
+    const requested = JSON.parse(call.input);
+    const adaptive = !!requested.autoContinuation;
+    const generation = this.generation, expires = adaptive ? Infinity : Date.now() + TTL;
+    let remaining = adaptive ? requested.autoContinuation.maxRuns ?? Infinity : 1;
+    let delivered = false, used = false, execution: string | undefined, executionTurn: number | undefined, claimed: string | undefined;
+    const valid = () => generation === this.generation && Date.now() < expires && !used && remaining > 0;
+    const grant = { valid, runId: "", scope: call.scope, adaptive, consume: (id: string) => { used = true; execution = id; executionTurn = this.turn; } };
     request.reply(Object.freeze({
       bind: (runId: string) => { if (valid() && !grant.runId && typeof runId === "string") grant.runId = runId; },
       complete: (details: object) => {
@@ -40,7 +47,12 @@ export class MeshContinuations {
       },
       claim: (id: string) => {
         if (!used || execution === undefined || executionTurn !== this.turn || generation !== this.generation || Date.now() >= expires || execution !== id) return false;
-        execution = undefined;
+        execution = undefined; claimed = id;
+        return true;
+      },
+      advance: (id: string, runId: string) => {
+        if (!adaptive || claimed !== id || generation !== this.generation || Date.now() >= expires || typeof runId !== "string" || !runId || runId === grant.runId) return false;
+        claimed = undefined; remaining--; grant.runId = runId; delivered = false; used = false;
         return true;
       },
     } satisfies MeshPermit));
@@ -58,7 +70,8 @@ export class MeshContinuations {
   }
   allow(callId: string, input: Record<string, unknown>, scope: Scope): boolean {
     const grant = this.active.find(grant => grant.runId === input.runId);
-    if (typeof callId !== "string" || !callId || !grant?.valid() || grant.scope.sessionId !== scope.sessionId || grant.scope.cwd !== scope.cwd || input.action !== "continue" || input.runId !== grant.runId || Object.keys(input).some(k => k !== "action" && k !== "runId")) return false;
+    if (typeof callId !== "string" || !callId || !grant?.valid() || grant.scope.sessionId !== scope.sessionId || grant.scope.cwd !== scope.cwd || input.action !== "continue" || input.runId !== grant.runId) return false;
+    if (grant.adaptive ? !["repair", "verify", "load-test"].includes(String(input.phase)) || Object.keys(input).some(k => !["action", "runId", "phase"].includes(k)) : Object.keys(input).some(k => k !== "action" && k !== "runId")) return false;
     this.active = this.active.filter(item => item !== grant);
     grant.consume(callId); // Charge before any other extension/tool can fail; no retry/refund.
     return true;
