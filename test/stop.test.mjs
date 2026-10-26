@@ -89,7 +89,7 @@ test('real SDK reload: old endpoint/ref removed, new incarnation, other Session 
 
 test('real SDK tool_call: peer-only turn blocks fixture Agent entry; actual user turn can execute it', { timeout: 15000 }, async () => {
   const { Type } = await import('typebox'); let executed = 0;
-  const a = await make('tool-A'), b = await make('tool-B', { tools: ['Agent'], extra: pi => pi.registerTool({
+  const a = await make('tool-A'), b = await make('tool-B', { guard: true, tools: ['Agent'], extra: pi => pi.registerTool({
     // This is an inert fixture, NOT the platform Agent tool and never creates a child.
     name: 'Agent', label: 'Fixture authority entry', description: 'Inert authorization fixture', parameters: Type.Object({}),
     async execute() { executed++; return { content: [{ type: 'text', text: 'fixture-only execution' }] }; },

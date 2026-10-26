@@ -17,7 +17,7 @@ export async function until(fn, label = 'condition', ms = 7000) { const end = Da
 export function hold() { let release; const promise = new Promise(r => release = r); return { promise, release }; }
 export function registrations() { return fs.existsSync(agentDir + '/peers') ? fs.readdirSync(agentDir + '/peers').filter(f => /^[0-9a-f]{32}\.json$/.test(f)).map(f => JSON.parse(fs.readFileSync(agentDir + '/peers/' + f, 'utf8'))) : []; }
 let totalCalls = 0;
-export async function make(name, { inbound = 'accept', rpc = false, managed = false, extra, tools = [], retry = false } = {}) {
+export async function make(name, { inbound = 'accept', rpc = false, guard = false, managed = false, extra, tools = [], retry = false } = {}) {
   const { ModelRuntime, SettingsManager, DefaultResourceLoader, createAgentSession, SessionManager } = sdk;
   const cwd = path.join(process.env.PI_CROSS_TEST_PRIVATE_ROOT, 'cwd'); fs.mkdirSync(cwd, { recursive: true });
   const runtime = await ModelRuntime.create({ authPath: agentDir + '/' + randomUUID() + '-auth.json', modelsPath: null, modelsStorePath: agentDir + '/' + randomUUID() + '-models.json', allowModelNetwork: false, refreshOnCreate: false });
@@ -49,6 +49,7 @@ export async function make(name, { inbound = 'accept', rpc = false, managed = fa
   await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
   loader.getExtensions().runtime.flagValues.set('cross-session-inbound', inbound);
   loader.getExtensions().runtime.flagValues.set('cross-session-rpc', rpc);
+  loader.getExtensions().runtime.flagValues.set('cross-session-guard', guard === true);
   const { session } = await createAgentSession({ cwd, agentDir, modelRuntime: runtime, model: runtime.getModel('test-local', 'only'), thinkingLevel: 'off', tools, resourceLoader: loader, sessionManager: SessionManager.inMemory(cwd), settingsManager: settings });
   session.setSessionName(name);
   session.subscribe(e => events.push(e.type));

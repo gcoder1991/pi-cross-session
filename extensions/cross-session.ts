@@ -517,6 +517,11 @@ export default function (pi: ExtensionAPI) {
   const seenTexts = new Map<string, number>();
 
   pi.registerFlag("cross-session-rpc", { description: "Enable trusted Host-only EventBus RPC/handled bridge admission", type: "boolean", default: false });
+  pi.registerFlag("cross-session-guard", {
+    description: "Block direct task-creation and platform tools (subagent, Agent, steer/send, user messaging, tool/config changes) in live peer-driven turns (default off; mesh and peer_goal fences always apply)",
+    type: "boolean",
+    default: false,
+  });
   pi.registerFlag("cross-session-inbound", {
     description: "Accept or refuse messages from other Pi sessions",
     type: "string",
@@ -1308,11 +1313,18 @@ export default function (pi: ExtensionAPI) {
       if (notificationTurn && !turnCancelled && !ctx.signal?.aborted) return allow();
     }
     // Explicit known authority-bearing entry points, not a classifier for arbitrary Bash.
-    const sensitive = ["Agent", "agent", "subagent", "steer_subagent", "send_subagent", "send_user_message", "set_active_tools", "set_config"].includes(event.toolName) ||
+    const directAuthorityTools = ["Agent", "agent", "subagent", "steer_subagent", "send_subagent", "send_user_message", "set_active_tools", "set_config"];
+    const sensitive = directAuthorityTools.includes(event.toolName) ||
       event.toolName === "peer_goal" && event.input.action !== "status" && !(event.input.action === "complete" && scoped && event.input.goalId === scoped.id && !turnCancelled && !ctx.signal?.aborted) ||
       event.toolName === "mesh" && !["list_agents", "status", "list", "handoff_list", "message_inbox", "message_ack", "growth_list"].includes(String(event.input.action)) ||
       event.toolName === "mesh_control" && event.input.action === "grow";
-    if (sensitive) return { block: true, reason: "Peer-only/cancelled turn cannot authorize task creation, resume, growth or policy changes; ask the local user" };
+    // cross-session-guard (default off): a live, non-cancelled, unscoped peer-driven turn may
+    // use the direct authority tools above (subagent/Agent/steer/send/messaging/config). Goal-
+    // scoped turns keep the goal's stricter contract, mesh, mesh_control and peer_goal keep
+    // their own fences in every mode, and every sensitive tool stays blocked in cancelled,
+    // unknown or notification-only contexts.
+    const guardCarveOut = pi.getFlag("cross-session-guard") !== true && provenance === "peer" && !turnCancelled && !scoped && !ctx.signal?.aborted && directAuthorityTools.includes(event.toolName);
+    if (sensitive && !guardCarveOut) return { block: true, reason: "Peer-only/cancelled turn cannot authorize task creation, resume, growth or policy changes; ask the local user" };
   });
   pi.on("tool_result", (event, ctx) => {
     if (observes(ctx) && !event.isError) goals.record(event.toolCallId, event.toolName, event.details);

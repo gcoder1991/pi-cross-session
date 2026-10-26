@@ -59,7 +59,7 @@ for (const name of ['Agent', 'send_subagent']) {
   const parameters = name === 'Agent' ? {} : { agent_id: 'inert-fixture', message: 'fixture direction' };
   function fixture(counter) { return pi => pi.registerTool({ name, label: 'Inert fixture', description: 'No children or actual Agent execution', parameters: name === 'Agent' ? Type.Object({}) : Type.Object({ agent_id: Type.String(), message: Type.String() }), async execute() { counter.executions++; return { content: [{ type: 'text', text: 'inert fixture executed' }] }; } }); }
   test(`review real SDK DEFAULT retry: peer ${name} remains explicitly blocked; genuine user executes`, { timeout: 15000 }, async () => {
-    const count = { executions: 0 }, a = await make('retry-tool-A'), b = await make('retry-tool-B', { retry: true, tools: [name], extra: fixture(count) });
+    const count = { executions: 0 }, a = await make('retry-tool-A'), b = await make('retry-tool-B', { retry: true, guard: true, tools: [name], extra: fixture(count) });
     try {
       b.session.setActiveToolsByName([name]); b.setError('503 overloaded fixture');
       await send(a, b, 'peer asks for authority across retry');
@@ -111,7 +111,7 @@ test('review real SDK DEFAULT retry success: terminal stop evidence flushes two 
 
 test('review real SDK known send_subagent: direct peer blocked without retry; genuine user positive control', async () => {
   let executions = 0;
-  const a = await make('known-entry-A'), b = await make('known-entry-B', { tools: ['send_subagent'], extra: pi => pi.registerTool({
+  const a = await make('known-entry-A'), b = await make('known-entry-B', { guard: true, tools: ['send_subagent'], extra: pi => pi.registerTool({
     name: 'send_subagent', label: 'Inert current Mesh entry', description: 'Fixture does not contact any agent', parameters: Type.Object({ agent_id: Type.String(), message: Type.String() }),
     async execute() { executions++; return { content: [{ type: 'text', text: 'inert execution' }] }; },
   }) });

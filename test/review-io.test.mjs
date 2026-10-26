@@ -137,7 +137,7 @@ for (const scenario of ['coalesced-near-hello', 'fragmented-near-message', 'BOM-
 });
 
 test('review component: unknown/toolUse/error ending drops queue; internal cancelled/peer continuations never gain tool authority', async () => {
-  const a = await component('evidence-a'), b = await component('evidence-b', { rpc: true });
+  const a = await component('evidence-a'), b = await component('evidence-b', { rpc: true, guard: true });
   try {
     for (const stopReason of [undefined, 'toolUse', 'error', 'length']) {
       await b.busy(); assert.equal((await wire(a, b, message('drop ' + stopReason))).status, 'queued');

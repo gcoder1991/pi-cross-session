@@ -35,7 +35,7 @@ test('second F1 real SDK: heartbeat WRITE cleanup cannot grant peer Agent/send_s
   try {
     for (const name of ['Agent', 'send_subagent']) {
       const count = { executions: 0 }, gate = hold();
-      const b = await make('heartbeat-' + name, { rpc: true, retry: true, tools: [name], extra: inert(name, count) });
+      const b = await make('heartbeat-' + name, { rpc: true, retry: true, guard: true, tools: [name], extra: inert(name, count) });
       rows.push({ b, name, count, gate });
       b.session.setActiveToolsByName([name]); b.setToolCall(call(name)); b.setGate(gate);
       assert.equal((await send(a, b, 'peer authority must survive inbox IO failure ' + name)).details.status, 'submitted');
@@ -93,7 +93,7 @@ for (const first of ['interactive', 'extension']) test(`second F2 real SDK downs
 });
 
 test('second authority scope: closed peer/unknown/cancelled continuations gated; idle/active/owned preflight cannot be relabelled; managed and never-bound unaffected', async () => {
-  const a = await component('scope-sender'), b = await component('scope-host');
+  const a = await component('scope-sender'), b = await component('scope-host', { guard: true });
   const sensitive = [['Agent', {}], ['send_subagent', {}], ['mesh', { action: 'resume' }], ['mesh_control', { action: 'grow' }]];
   async function blocked() { for (const [toolName, input] of sensitive) assert.deepEqual(await b.emit('tool_call', { toolName, input }), { block: true, reason }); }
   try {
@@ -122,7 +122,7 @@ test('second authority scope: closed peer/unknown/cancelled continuations gated;
     // Registration rename is public before startup's final chmod await returns.
     // A peer submitted in that window must retain authority even if start fails.
     publicationFault = { hits: 0, gate: hold() }; let c;
-    const starting = component('scope-publication');
+    const starting = component('scope-publication', { guard: true });
     try {
       await until(() => publicationFault.hits === 1, 'real post-rename chmod callee');
       const peer = registrations().find(p => p.instanceId === publicationFault.peer.instanceId); assert.ok(peer);
@@ -136,4 +136,24 @@ test('second authority scope: closed peer/unknown/cancelled continuations gated;
       assert.deepEqual(results, sensitive.map(() => ({ block: true, reason })));
     } finally { publicationFault.gate.release(); c ??= await starting; await c.close(); publicationFault = undefined; }
   } finally { await b.close(); await a.close(); }
+});
+
+test('second guard switch: live peer turn direct tools default ALLOWED; flag restores blocks; mesh/unknown fences stay', async () => {
+  const a = await component('guard-switch-sender');
+  const b = await component('guard-switch-host');
+  try {
+    await wire(a, b, message('peer asks for a subagent'));
+    await b.emit('input', { source: 'interactive' }); // Cross submission owns preflight; provenance stays peer.
+    for (const toolName of ['subagent', 'Agent', 'send_subagent', 'set_config']) assert.equal(await b.emit('tool_call', { toolName, input: {} }), undefined, `${toolName} allowed by default in a live peer turn`);
+    assert.equal((await b.emit('tool_call', { toolName: 'mesh', input: { action: 'run' } })).block, true, 'mesh authority keeps its fence with the guard off');
+    assert.equal((await b.emit('tool_call', { toolName: 'peer_goal', input: { action: 'start', objective: 'x' } })).block, true, 'peer_goal keeps its fence with the guard off');
+    await b.settled(false); // cancelled/unknown context: fences unchanged.
+    assert.equal((await b.emit('tool_call', { toolName: 'subagent', input: {} })).block, true, 'non-peer provenance still blocks after settle');
+  } finally { await b.close(); }
+  const c = await component('guard-switch-on', { guard: true });
+  try {
+    await wire(a, c, message('peer asks again'));
+    await c.emit('input', { source: 'interactive' });
+    assert.deepEqual(await c.emit('tool_call', { toolName: 'subagent', input: {} }), { block: true, reason }, 'flag on restores the block');
+  } finally { await c.close(); await a.close(); }
 });

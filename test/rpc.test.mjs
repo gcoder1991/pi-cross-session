@@ -47,7 +47,7 @@ test('real SDK/IPC: Host RPC exact identities, single reply/duplicate, bridge ha
 });
 
 test('component: bridge version/TTL/hops/budget rejection; async handled is too late; peer-only sensitive tool gate', async () => {
-  const a = await component('a'), b = await component('b', { rpc: true });
+  const a = await component('a'), b = await component('b', { rpc: true, guard: true });
   try {
     const base = { version: 1, origin: 'a', correlationId: 'b', expiresAt: Date.now() + 10000, hops: 1, budget: 2, payload: {} };
     for (const patch of [{ version: 2 }, { expiresAt: Date.now() - 1 }, { hops: 5 }, { budget: 0 }, { origin: '' }]) assert.equal((await wire(a, b, message(BRIDGE_PREFIX + JSON.stringify({ ...base, ...patch })))).status, 'invalid_bridge');
