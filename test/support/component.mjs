@@ -13,6 +13,7 @@ export async function component(name, options = {}) {
   runtime.flagValues.set('cross-session-rpc', !!options.rpc);
   runtime.flagValues.set('cross-session-inbound', options.inbound ?? 'accept');
   runtime.flagValues.set('cross-session-guard', options.guard === true);
+  runtime.flagValues.set('cross-session-auto-resume', options.autoResume === true);
   runtime.getSessionName = () => name;
   runtime.sendMessage = (message, opts) => { calls.push({ message, opts }); };
   runtime.appendEntry = (customType, data) => entries.push({ type: 'custom', customType, data, id: randomUUID(), parentId: null, timestamp: new Date().toISOString() });
