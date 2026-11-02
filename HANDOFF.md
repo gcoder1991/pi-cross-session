@@ -53,6 +53,7 @@ message = {
 - agent_start 捕获 signal 并注册 abort listener；signal abort 或 assistant aborted 证据都会 stop latch，并立刻丢弃未提交队列。unknown/internal abort 也保守 latch。
 - admission 的同步受信事件回调后再次验证取消、incarnation 与同一 signal，覆盖 listener 内发生 abort 的重入。
 - 未确认 signal/来源的忙碌或 preflight 状态拒绝（不自动猜测执行）。error 会撤销终止成功资格，每次 low-level agent_start 都重新等待成功证据。错误/backoff 取消、缺失成功证据、toolUse/length 尾态或未知来源的 settled 均保守 latch/drop；实际 retry 后成功 stop 才可恢复该逻辑 turn 的安全 flush 资格。
+- 可选 flag `cross-session-auto-resume`（默认关）：本地用户下一个干净结束的 interactive/rpc turn 在 agent_settled 时自动重开收件；peer 文本、通知 turn、extension turn、失败或取消的 turn 都不会重开；不重放 dropped，不补预算。
 - 只有本地用户 `/cross-session-resume` 命令可以重新打开；需要 SDK idle 且无 active signal。普通用户 prompt、peer 文本、工具参数均不解锁收件；但 idle 后新的 genuine interactive/rpc 用户 turn 可正常使用自己的工具，不需要先重开 peer 收件。命令不重放 dropped，也不补充预算。
 - 每 incarnation **共享 256 单位**收发预算：每次 inbound admission、每次 outbound exchange attempt 各扣一；桥接同样扣；agent_settled/resume 不补满。新 incarnation 才重置，绝不能由 adapter 自动 reload 来续预算。
 - per-sender token bucket 30 / refill 0.5s⁻¹；sender-qualified SHA-256 摘要 → admission 时间 Map 抑制同 sender 同文本 30s 内 A/B/A，不仅上一条；不随 settled 清空，最多 256 个 committed 摘要键，由总预算约束。

@@ -522,6 +522,11 @@ export default function (pi: ExtensionAPI) {
     type: "boolean",
     default: false,
   });
+  pi.registerFlag("cross-session-auto-resume", {
+    description: "Reopen peer admission after a cancellation when the local user's next turn settles cleanly (default off: only /cross-session-resume reopens it). Peer text, notifications and extension turns never reopen it, and dropped messages never replay",
+    type: "boolean",
+    default: false,
+  });
   pi.registerFlag("cross-session-inbound", {
     description: "Accept or refuse messages from other Pi sessions",
     type: "string",
@@ -539,9 +544,18 @@ export default function (pi: ExtensionAPI) {
     const [entry] = pending.splice(i, 1); clearTimeout(entry.timer);
     status(key, reason);
   }
+  // The footer tells the local user why peers get "stopped"; a missing UI must never break the latch.
+  function showPaused(ctx: ExtensionContext | undefined, paused: boolean) {
+    try { ctx?.ui?.setStatus?.("cross-session", paused ? "peers paused" : undefined); } catch { /* UI is optional */ }
+  }
   function latch() {
     stopped = true; turnCancelled = true; notificationTurn = false; revokeGoal();
     for (const entry of [...pending]) dropPending(entry.key, "dropped_cancelled");
+    showPaused(currentCtx, true);
+  }
+  function reopen(ctx: ExtensionContext) {
+    stopped = false;
+    showPaused(ctx, false);
   }
   function submit(details: IncomingDetails, key: string) {
     if (shuttingDown || stopped || phase !== "idle" || !currentCtx?.isIdle() || activeSignal) {
@@ -792,7 +806,9 @@ export default function (pi: ExtensionAPI) {
       if (!value.text.trim()) return reject(value.requestId, "invalid_message", "Message text must not be empty");
       if (codePointLength(value.summary) > 200) return reject(value.requestId, "invalid_message", "Message summary exceeds 200 characters");
       if (inboundMode() === "refuse") return reject(value.requestId, "refused", "Recipient is not accepting cross-session messages");
-      if (stopped) return reject(value.requestId, "stopped", "Observed cancellation; local user must run /cross-session-resume (dropped messages never replay)");
+      if (stopped) return reject(value.requestId, "stopped", pi.getFlag("cross-session-auto-resume") === true
+        ? "Recipient paused peer messages after a local cancellation; they reopen after the local user's next completed turn (or /cross-session-resume). Dropped messages never replay; retry later, not in a loop"
+        : "Observed cancellation; local user must run /cross-session-resume (dropped messages never replay)");
       if (Date.now() - value.sentAt > QUEUE_TTL_MS || value.sentAt > Date.now() + 5_000) return reject(value.requestId, "expired", "Message timestamp is expired or in the future; inspect clocks, do not auto-retry");
       let bridge;
       try { bridge = bridgeEnvelope(value.text); } catch (error) { return reject(value.requestId, "invalid_bridge", String(error)); }
@@ -1268,6 +1284,9 @@ export default function (pi: ExtensionAPI) {
     // Ordinary completion notifications are trusted even without a Mesh permit.
     const safe = terminalSuccess && !!activeSignal && !activeSignal.aborted && (provenance !== "unknown" || notificationTurn) && !turnCancelled;
     if (!safe) latch(); // Includes error/backoff cancellation and unobserved terminal outcome.
+    // Only interactive or rpc input sets provenance "user", and peer text cannot enter while stopped,
+    // so this gate is reachable by the local user alone; a notification or idle settle never reopens.
+    else if (stopped && provenance === "user" && pi.getFlag("cross-session-auto-resume") === true && !shuttingDown) reopen(ctx);
     unwatch(); unwatch = () => {}; activeSignal = undefined;
     continuations.settle();
     phase = "idle"; provenance = "unknown"; submittedKey = undefined; notificationTurn = false;
@@ -1336,7 +1355,7 @@ export default function (pi: ExtensionAPI) {
       for (const entry of [...pending]) dropPending(entry.key, "dropped_user_reset");
       clearTimeout(submissionTimer); submissionTimer = undefined;
       phase = "idle"; provenance = "unknown"; inputSource = "unknown"; submittedKey = undefined; notificationTurn = false; epoch++;
-      stopped = false; ctx.ui.notify("Peer admission reopened; dropped messages are not replayed and budget is not refilled", "info");
+      reopen(ctx); ctx.ui.notify("Peer admission reopened; dropped messages are not replayed and budget is not refilled", "info");
     },
   });
   pi.registerCommand("cross-session-status", {
